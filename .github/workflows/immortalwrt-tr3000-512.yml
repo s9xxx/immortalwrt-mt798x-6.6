@@ -154,6 +154,42 @@ jobs:
           echo "===== 集合默认主题 ====="
           grep -H "luci-theme-argon" feeds/luci/collections/*/Makefile 2>/dev/null || true
 
+      - name: 修补 libffi InstallDev（feed 里 fficonfig.h 路径已失效）
+        shell: bash
+        run: |
+          f=feeds/packages/libs/libffi/Makefile
+          if [ ! -f "$f" ]; then echo ">>> 无 $f，跳过"; exit 0; fi
+          if ! grep -qF 'GNU_TARGET_NAME)*/fficonfig.h' "$f"; then
+            echo ">>> libffi InstallDev 已是可用版本，跳过"; exit 0
+          fi
+          python3 - "$f" <<'PY'
+          import re, sys
+
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+
+          old = re.compile(
+              r"\t\$\(CP\) \\\n"
+              r"\t\t\$\(PKG_BUILD_DIR\)/\$\(GNU_TARGET_NAME\)\*/fficonfig\.h \\\n"
+              r"\t\t\$\(1\)/usr/include/\n"
+          )
+
+          new = (
+              "\t@ffi=$$(find $(PKG_BUILD_DIR) -maxdepth 3 -name fficonfig.h 2>/dev/null | head -n1); \\\n"
+              "\tif [ -n \"$$ffi\" ]; then $(CP) \"$$ffi\" $(1)/usr/include/; \\\n"
+              "\telse echo \"libffi: build_dir 未生成 fficonfig.h，跳过（仅 node-ffi-napi 需要）\"; fi\n"
+          )
+
+          if not old.search(s):
+              print("SKIP: 未找到待修补的 fficonfig.h 拷贝段（可能已被上游修好）")
+              sys.exit(0)
+
+          s2 = old.sub(new, s, count=1)
+          open(p, "w", encoding="utf-8").write(s2)
+          print("PATCHED")
+          PY
+          sed -n '/define Build\/InstallDev/,/^endef/p' "$f" | tail -8
+
       - name: 生成 .config（TR3000 512MB + ccache + argon）
         run: |
           mkdir -p tmp
