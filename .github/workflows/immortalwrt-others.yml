@@ -336,6 +336,9 @@ jobs:
           fi
           cat >> .config <<'CFG'
           CONFIG_TARGET_MULTI_PROFILE=y
+          # 每个机型单独出 rootfs（等价于 BUILDBOT 的默认值），否则所有已选机型的
+          # profile 包会合并进同一份 rootfs，镜像臃肿且机型专属包互相冲突
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
           # CCACHE 的提示项带 "if DEVEL"，未开 DEVEL 时 defconfig 会丢弃 CONFIG_CCACHE
           CONFIG_DEVEL=y
           CONFIG_CCACHE=y
@@ -348,6 +351,18 @@ jobs:
           CFG
           sed -i 's/^          //' .config
           make defconfig
+
+          # defconfig 只会选中「Target Profile」choice 里的默认机型；MULTI_PROFILE=y 时
+          # 其余机型在 .config 里全是 "# CONFIG_TARGET_DEVICE_... is not set"，image 阶段
+          # DEVICE_CHECK_PROFILE 一律为 n → 日志里 "启用机型: 0 个"，world 虽然返回成功，
+          # 但 bin/targets 下只有 bl2.bin，没有任何固件。这里显式打开该子目标全部机型，
+          # 再跑一次 defconfig 让机型 select 出来的依赖（kmod / 固件包）自洽。
+          sed -i 's/^# \(CONFIG_TARGET_DEVICE_[A-Za-z0-9_]*\) is not set$/\1=y/' .config
+          make defconfig
+          n_dev="$(grep -c '^CONFIG_TARGET_DEVICE_.*=y' .config || true)"
+          n_dev="${n_dev:-0}"
+          echo "启用机型: ${n_dev} 个"
+          [ "${n_dev}" -gt 0 ] || { echo "::error::没有任何机型被启用，产物会是空"; exit 1; }
 
           # argon 作为默认主题：99 号 uci-defaults 晚于主题包自带的 30_luci-theme-*，
           # 启动时强制把 mediaurlbase 指向 argon，避免 bootstrap 抢默认
