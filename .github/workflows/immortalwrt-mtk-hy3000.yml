@@ -237,6 +237,9 @@ jobs:
             fi
 
             # 4) 复核设备 + WiFi
+            # 签名开关由 .github/configs/24-config-general 关闭；若被 kconfig
+            # 回滚，package/index 会因缺少 usign 宿主工具直接失败（Error 127）
+            grep -q "CONFIG_SIGNED_PACKAGES is not set" .config || { echo "::error::包索引签名未关闭，package/index 会因缺少 usign 宿主工具失败"; exit 1; }
             vrc=0
             python3 verify_config.py || vrc=$?
             if [ "$vrc" = "0" ]; then

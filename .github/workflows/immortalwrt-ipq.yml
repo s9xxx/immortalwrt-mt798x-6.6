@@ -302,6 +302,10 @@ jobs:
           CONFIG_CCACHE=y
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-argon-config=y
+          # package/index 给包索引签名要用 staging_dir/host/bin/usign，该宿主工具只在 CONFIG_PACKAGE_usign=y 时编译；
+          # 默认配置 SIGNED_PACKAGES=y + usign=n，签名阶段必然 Error 127，且签名还需要 TOPDIR/key-build 私钥（仓库无）。
+          # CONFIG_SIGNED_PACKAGES is not set
+          # CONFIG_SIGNATURE_CHECK is not set
           CFG
           sed -i 's/^          //' .config
           make defconfig

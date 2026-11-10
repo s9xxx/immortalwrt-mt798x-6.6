@@ -308,6 +308,14 @@ jobs:
           # 直接 NOTFOUND 失败（mt7622/7623/filogic 均会命中）。这里显式选中。
           CONFIG_PACKAGE_libmbedtls=y
           CONFIG_PACKAGE_libustream-mbedtls=y
+          # package/index 会给包索引签名，用的是 staging_dir/host/bin/usign；
+          # 该宿主工具来自 package/system/usign 的 HostBuild，只有
+          # CONFIG_PACKAGE_usign=y 才会被编译。默认配置是 SIGNED_PACKAGES=y 且
+          # usign=n，签名阶段必然 "usign: No such file or directory"（Error 127）。
+          # 签名还依赖 TOPDIR/key-build 私钥（仓库无此文件），故直接关闭签名；
+          # SIGNATURE_CHECK 默认跟随 SIGNED_PACKAGES，一并为 n。
+          # CONFIG_SIGNED_PACKAGES is not set
+          # CONFIG_SIGNATURE_CHECK is not set
           CFG
           sed -i 's/^          //' .config
           make defconfig
@@ -334,6 +342,7 @@ jobs:
           echo "启用机型: $(grep -c '^CONFIG_TARGET_DEVICE_.*=y' .config) 个"
           grep -q "^CONFIG_CCACHE=y" .config && echo "ccache: 已启用" || echo "::warning::ccache 未启用"
           grep -q "^CONFIG_PACKAGE_luci-theme-argon=y" .config && echo "主题: argon 已启用" || { echo "::error::argon 主题未启用"; exit 1; }
+          grep -q "CONFIG_SIGNED_PACKAGES is not set" .config || { echo "::error::包索引签名未关闭，package/index 会因缺少 usign 宿主工具失败"; exit 1; }
           if grep -q "^CONFIG_PACKAGE_luci-theme-bootstrap=y" .config; then
             echo "::warning::bootstrap 仍被其他包依赖（argon 仍为默认主题，由 uci-defaults 保证）"
           else

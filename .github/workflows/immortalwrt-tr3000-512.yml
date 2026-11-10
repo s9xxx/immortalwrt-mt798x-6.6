@@ -244,6 +244,11 @@ jobs:
             # 2) 从权威元数据里找机型符号（机型名归一化匹配，不手写 kconfig 符号）
             python3 gen_config.py
 
+            # 签名开关：usign 宿主工具只在 CONFIG_PACKAGE_usign=y 时编译，默认配置是
+            # SIGNED_PACKAGES=y + usign=n，package/index 签名必然 Error 127，
+            # 且签名还需要 TOPDIR/key-build 私钥（仓库无此文件）。
+            echo "# CONFIG_SIGNED_PACKAGES is not set" >> .config
+            echo "# CONFIG_SIGNATURE_CHECK is not set" >> .config
             # 3) defconfig —— kconfig 遇递归依赖时仍会写出 .config 并 exit 0，只能事后复核
             if ! make -j1 defconfig > defconfig.log 2>&1; then
               tail -40 defconfig.log
