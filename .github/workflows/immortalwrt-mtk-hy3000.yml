@@ -1,0 +1,408 @@
+# ImmortalWrt 24.10（openwrt-24.10-6.6）— Philips HY3000 单机型编译
+#
+# 设备定义（已随本仓库提供，与 tvliving/immortalwrt-mt798x-action 验证过的
+# hy3000 配方同源）：
+#   target/linux/mediatek/dts/mt7981b-philips-hy3000.dts
+#   target/linux/mediatek/image/filogic.mk -> Device/philips_hy3000
+#
+# WiFi 说明（重点）：本仓库是 padavanonly 体系，无线走 MTK mt_wifi 驱动
+# （kmod-mt_wifi + mtwifi-cfg，不依赖 DTS 的 &wifi 节点）。单独编译时如果
+# .config 没显式选入这套驱动，固件就完全没有无线。本 workflow 用
+# mt798x-action 验证过的配置栈（.github/configs/24-config-*.yml）生成
+# .config，并在 defconfig 后复核 WiFi 五件套，缺一即失败，杜绝静默产出
+# 无无线固件。
+#
+# 定时：每周五 13:00（北京时间）= UTC 05:00
+name: ImmortalWrt HY3000 编译
+
+on:
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+  schedule:
+    # 每周五 05:00 UTC = 北京时间 13:00
+    - cron: '0 5 * * 5'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  TARGET: mediatek
+  SUB: filogic
+  DEVICE: philips_hy3000
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1500M
+  CCACHE_COMPRESS: 'true'
+  CCACHE_NOHASHDIR: 'true'
+
+jobs:
+  build:
+    name: 🏗️ Philips HY3000
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout 源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 校验设备定义存在
+        run: |
+          dts="target/linux/$TARGET/dts/mt7981b-philips-hy3000.dts"
+          [ -f "$dts" ] || { echo "::error::缺少 $dts"; exit 1; }
+          grep -q "Device/$DEVICE" target/linux/$TARGET/image/filogic.mk \
+            || { echo "::error::filogic.mk 里没有 Device/$DEVICE"; exit 1; }
+          echo ">>> 设备定义检查通过"
+          grep -n "Device/$DEVICE" -A 12 target/linux/$TARGET/image/filogic.mk | head -14
+
+      - name: 释放磁盘空间并加大 swap
+        run: |
+          echo "===== 释放前 ====="
+          df -h / | tail -1
+
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo pkill -9 -f dockerd 2>/dev/null || true
+          sudo pkill -9 -f containerd 2>/dev/null || true
+
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /snap /var/lib/snapd 2>/dev/null || true
+          sudo journalctl --vacuum-size=32M 2>/dev/null || true
+
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile /mnt/swapfile 2>/dev/null || true
+          if sudo fallocate -l 4G /swapfile 2>/dev/null; then
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile && echo ">>> swap 4G 已启用"
+          else
+            echo "::warning::swap 创建失败，继续"
+          fi
+
+          echo "===== 释放后 ====="
+          df -h / | tail -1
+          free -h
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq -o Acquire::Retries=3 || sudo -E apt-get update -qq
+          for i in 1 2 3; do
+            if timeout 1500 sudo -E apt-get install -y --no-install-recommends \
+              ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+              build-essential bzip2 ccache clang cmake cpio curl \
+              device-tree-compiler flex gawk gcc-multilib g++-multilib \
+              genisoimage gettext git gperf haveged help2man intltool \
+              libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
+              libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+              libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+              libssl-dev libtool libxslt1-dev lld llvm lrzsz msmtp ninja-build \
+              p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+              python3-setuptools qemu-utils rsync scons squashfs-tools \
+              subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto \
+              xxd zlib1g-dev; then
+              echo ">>> 依赖安装完成"
+              break
+            fi
+            echo ">>> 第 $i 次安装失败，30 秒后重试"
+            sleep 30
+          done
+          ccache --version | head -1 || echo "::warning::ccache 不可用"
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.TARGET }}-${{ env.SUB }}-${{ env.DEVICE }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.TARGET }}-${{ env.SUB }}-${{ env.DEVICE }}-
+            ccache-${{ env.TARGET }}-${{ env.SUB }}-
+
+      - name: 更新 feeds 并注入第三方包
+        run: |
+          # iStore 应用商店源（与 mt798x-action 的 diy-part1.sh 一致）
+          echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+
+          for i in 1 2 3; do
+            if ./scripts/feeds update -a && ./scripts/feeds install -a; then
+              echo ">>> feeds 完成"
+              break
+            fi
+            echo ">>> 第 $i 次 feeds 失败，20 秒后重试"
+            rm -rf feeds
+            sleep 20
+            [ "$i" = "3" ] && exit 1
+          done
+
+          # feeds install -a 不一定装上 istore feed 的包，显式再装一遍
+          ./scripts/feeds install -d y -p istore luci-app-store || true
+          ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || true
+
+          # 第三方包（24-config-general 里引用的 luci-app-adguardhome / luci-app-wolplus）
+          # wolplus 原引用 sbwml/openwrt_pkgs 稀疏目录，该目录已从上游仓库移除，
+          # 改用独立仓库 animegasan/luci-app-wolplus（标准包布局）
+          git clone --depth=1 https://github.com/sirpdboy/luci-app-adguardhome package/luci-app-adguardhome
+          sed -i "s/\(option enabled '\)1'/\10'/" package/luci-app-adguardhome/luci-app-adguardhome/root/etc/config/AdGuardHome || true
+          git clone --depth=1 https://github.com/animegasan/luci-app-wolplus package/luci-app-wolplus
+          [ -f package/luci-app-wolplus/Makefile ] || { echo "::error::luci-app-wolplus 克隆失败或布局异常"; exit 1; }
+
+          # 默认主题：luci / luci-light 集合原本依赖 luci-theme-bootstrap，
+          # 改成依赖 argon，保证 argon 可用且为默认
+          for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
+            [ -f "$f" ] && sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' "$f"
+          done
+          echo ">>> feeds 与第三方包注入完成"
+
+      - name: 生成 .config（HY3000 + mt798x-action 配置栈 + WiFi 复核）
+        run: |
+          cat > verify_config.py <<'PY'
+          import re, sys
+
+          cfg = open(".config", encoding="utf-8", errors="replace").read()
+
+          # 1) 设备必须选中
+          if not re.search(r"^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_philips_hy3000=y$", cfg, re.M):
+              print("::error::机型 philips_hy3000 被 kconfig 丢弃")
+              for l in cfg.splitlines():
+                  if "TARGET_DEVICE" in l and "philips" in l.lower():
+                      print("  ", l)
+              sys.exit(1)
+          print("OK   设备 philips_hy3000 已选中")
+
+          # 2) WiFi 五件套（mt_wifi 体系，缺任一就没有无线）
+          wifi_pkgs = ["kmod-mt_wifi", "mtwifi-cfg", "wifi-scripts",
+                       "wireless-regdb", "luci-app-mtwifi-cfg"]
+          lost = []
+          for p in wifi_pkgs:
+              flag = "CONFIG_PACKAGE_%s=y" % p
+              if flag in cfg:
+                  print("OK  ", flag)
+              else:
+                  print("MISS", flag)
+                  lost.append(p)
+          if lost:
+              print("::error::WiFi 必需包缺失（固件将没有无线）: %s" % " ".join(lost))
+              sys.exit(1)
+
+          # 3) 商店与主题
+          for p in ("luci-app-store", "luci-theme-argon"):
+              flag = "CONFIG_PACKAGE_%s=y" % p
+              print(("OK   " if flag in cfg else "WARN ") + flag)
+          PY
+
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::group::第 ${attempt} 次生成 .config"
+
+            # 1) 权威元数据
+            if ! make -j1 prepare-tmpinfo > prepare.log 2>&1; then
+              tail -40 prepare.log
+              echo "::endgroup::"
+              echo "::error::prepare-tmpinfo 失败，见上方日志"
+              exit 1
+            fi
+            grep -E "Please install|Build dependency|Failed to build" prepare.log | head -10 || true
+
+            # 2) mt798x-action 验证过的配置栈：机型 + mt7981 通用(mt_wifi 全套) + 常规 + bash
+            cat .github/configs/24-config-musl-hy3000 > .config
+            cat .github/configs/24-config-ax3000-common >> .config
+            cat .github/configs/24-config-general >> .config
+            echo "CONFIG_PACKAGE_bash=y" >> .config
+            echo "CONFIG_CCACHE=y" >> .config
+            echo ">>> 已写入配置栈（$(wc -l < .config) 行）"
+
+            # 3) defconfig
+            if ! make -j1 defconfig > defconfig.log 2>&1; then
+              tail -40 defconfig.log
+              echo "::endgroup::"
+              echo "::error::make defconfig 执行失败"
+              exit 1
+            fi
+
+            # 4) 复核设备 + WiFi
+            vrc=0
+            python3 verify_config.py || vrc=$?
+            if [ "$vrc" = "0" ]; then
+              ok=1
+              echo "::endgroup::"
+              break
+            fi
+
+            # 5) Kconfig 递归依赖兜底：禁用问题包后重试
+            if grep -q "recursive dependency detected" defconfig.log; then
+              echo "::warning::检测到 Kconfig 递归依赖（feed 元数据 bug），禁用问题包后重试"
+              bad=$(grep -oE "symbol PACKAGE_[A-Za-z0-9_.+-]+ depends on PACKAGE_" defconfig.log \
+                    | sed -E 's/^symbol PACKAGE_([^ ]+) .*/\1/' | sort -u)
+              echo "问题包: ${bad:-（未解析出包名）}"
+              changed=0
+              for p in $bad; do
+                case "$p" in
+                  kmod-mt_wifi|mtwifi-cfg|wifi-scripts|wireless-regdb|luci-app-mtwifi-cfg|philips_hy3000)
+                    echo "::error::$p 属于必需项，不能自动禁用"; echo "::endgroup::"; exit 1 ;;
+                esac
+                while IFS= read -r d; do
+                  [ -z "$d" ] && continue
+                  if [ -f "$d/Makefile" ]; then
+                    mv "$d/Makefile" "$d/Makefile.disabled"
+                    echo "已禁用: $d"
+                    changed=1
+                  fi
+                done < <(find package feeds -maxdepth 4 -type d -name "$p" 2>/dev/null)
+              done
+              [ "$changed" = "1" ] || { echo "::error::未能禁用任何问题包"; echo "::endgroup::"; exit 1; }
+              make -j1 prepare-tmpinfo > /dev/null 2>&1 || true
+              continue
+            fi
+
+            echo "::endgroup::"
+            echo "::error::配置复核失败且不是递归依赖问题，详见上方 verify 输出"
+            exit 1
+          done
+          [ "$ok" = "1" ] || { echo "::error::3 次尝试都失败"; exit 1; }
+
+          grep -q '^CONFIG_TARGET_mediatek=y' .config && echo "目标: mediatek/filogic"
+          grep -q '^CONFIG_CCACHE=y' .config && echo "ccache: 已启用"
+
+      - name: 下载源码包
+        run: |
+          for i in 1 2 3; do
+            if make -j8 download < /dev/null; then
+              echo ">>> 下载完成"
+              break
+            fi
+            echo ">>> 第 $i 次下载有失败项，重试"
+            sleep 15
+          done
+          make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 编译固件
+        run: |
+          export CCACHE_DIR CCACHE_MAXSIZE CCACHE_COMPRESS CCACHE_NOHASHDIR
+          mkdir -p "$CCACHE_DIR"
+          ccache -s 2>/dev/null || true
+          set -o pipefail
+          echo ">>> 串行预编译 host tools"
+          t_ok=1
+          if make -n tools/compile >/dev/null 2>&1; then
+            t_ok=0
+            for i in 1 2 3; do
+              if make tools/compile -j1 2>&1 | tee tools.log; then t_ok=1; break; fi
+              echo "::warning::tools 编译第 $i 次失败，10 秒后重试"
+              sleep 10
+            done
+          else
+            echo "::warning::本仓库没有 tools/compile 目标，跳过串行预编译"
+          fi
+          if [ "$t_ok" != "1" ]; then
+            echo "::error::host tools 编译失败（见 tools.log）"
+            tail -100 tools.log || true
+            exit 1
+          fi
+          echo ">>> 并行编译 make -j$(nproc)"
+          if make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo ">>> ✅ 编译成功"
+          else
+            echo "::warning::并行编译失败，改用单线程 V=s 复现真实错误"
+            make -j1 V=s 2>&1 | tee -a error.log || true
+            echo "===== error.log 尾部 150 行 ====="
+            tail -150 error.log || true
+            ccache -s 2>/dev/null || true
+            exit 1
+          fi
+          ccache -s 2>/dev/null || true
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-hy3000
+          path: |
+            build.log
+            error.log
+            tools.log
+            .config
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          d="bin/targets/$TARGET/$SUB"
+          if [ -d "$d" ]; then
+            find "$d" -maxdepth 1 -type f \
+              \( -name '*philips_hy3000*' -o -name 'sha256sums' -o -name 'profiles.json' \
+                 -o -name '*.buildinfo' -o -name '*.manifest' \) \
+              -exec cp {} out/ \; 2>/dev/null || true
+          fi
+          echo "===== 产物 ====="
+          ls -lh out || true
+          if ! ls out 2>/dev/null | grep -qE "hy3000.*-squashfs-sysupgrade\.bin"; then
+            echo "::error::没有找到 hy3000 的 squashfs-sysupgrade.bin（$d）"
+            ls -la "$d" 2>/dev/null || true
+            exit 1
+          fi
+          {
+            echo "## 🏗️ Philips HY3000 编译完成"
+            echo ""
+            echo "- target: \`$TARGET/$SUB\`，device: \`$DEVICE\`"
+            echo "- WiFi: mt_wifi 驱动（kmod-mt_wifi + mtwifi-cfg），已复核选中"
+            echo ""
+            echo "| 文件 | 大小 |"
+            echo "|---|---|"
+            ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-hy3000
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: ${{ github.event_name == 'schedule' || inputs.make_release != false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="immortalwrt-hy3000-$(TZ=Asia/Shanghai date +%Y%m%d)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            OLD="$TAG"
+            TAG="${TAG}-r${GITHUB_RUN_NUMBER}"
+            echo "::warning::${OLD} 已存在（历史保留），本次使用 ${TAG}"
+          fi
+
+          cat > notes.md <<EOF
+          ImmortalWrt 24.10-6.6 自动编译：Philips HY3000（MT7981B，eMMC）
+
+          - 触发方式: ${{ github.event_name }}
+          - 设备: philips_hy3000（mediatek / filogic）
+          - WiFi: MTK mt_wifi 驱动（kmod-mt_wifi + mtwifi-cfg），默认已启用双频无线
+          - 默认 IP: 192.168.1.1 / 用户名 root / 无密码
+          - 提交: ${{ github.sha }}
+          - 日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+          ls -lh out/
+          gh release create "$TAG" out/* \
+            --title "ImmortalWrt HY3000 ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+            --notes-file notes.md
+          echo ">>> 已发布: $TAG"

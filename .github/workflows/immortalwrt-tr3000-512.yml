@@ -1,0 +1,450 @@
+# ImmortalWrt 24.10（openwrt-24.10-6.6）— Cudy TR3000 512MB 单机型编译
+#
+# 设备定义（已随本仓库提交）：
+#   target/linux/mediatek/dts/mt7981b-cudy-tr3000-v1-512mb.dts
+#   target/linux/mediatek/image/filogic.mk -> Device/cudy_tr3000-512mb-v1
+#   512MB NAND：ubi 分区 0x005c0000 + 0x1FA40000，IMAGE_SIZE 520000k
+#
+# 机制：单 job 只编这一台（CONFIG_TARGET_PROFILE），磁盘清理 + 4G swap + ccache 加速，
+#       默认主题 argon（集合依赖替换 + 99 号 uci-defaults 强制 mediaurlbase）。
+name: ImmortalWrt TR3000 512MB 编译
+
+on:
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+  schedule:
+    # 每周一、周四 07:00（北京时间）
+    - cron: '0 23 * * 0,3'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  TARGET: mediatek
+  SUB: filogic
+  DEVICE: cudy_tr3000-512mb-v1
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1500M
+  CCACHE_COMPRESS: 'true'
+  CCACHE_NOHASHDIR: 'true'
+
+jobs:
+  build:
+    name: 🏗️ TR3000 512MB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout 源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 校验设备定义存在
+        run: |
+          dts="target/linux/$TARGET/dts/mt7981b-cudy-tr3000-v1-512mb.dts"
+          [ -f "$dts" ] || { echo "::error::缺少 $dts"; exit 1; }
+          grep -q "Device/$DEVICE" target/linux/$TARGET/image/filogic.mk \
+            || { echo "::error::filogic.mk 里没有 Device/$DEVICE"; exit 1; }
+          echo ">>> 设备定义检查通过"
+          grep -n "Device/$DEVICE" -A 12 target/linux/$TARGET/image/filogic.mk | head -14
+
+      - name: 释放磁盘空间并加大 swap
+        run: |
+          echo "===== 释放前 ====="
+          df -h / | tail -1
+
+          # runner 预装的大型组件（约 25~35G）
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+
+          # docker / containerd 镜像与数据（约 10G）
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo pkill -9 -f dockerd 2>/dev/null || true
+          sudo pkill -9 -f containerd 2>/dev/null || true
+
+          # apt 缓存、snap、日志
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /snap /var/lib/snapd 2>/dev/null || true
+          sudo journalctl --vacuum-size=32M 2>/dev/null || true
+
+          # 重建 4G swap：并行编译内存打满时靠它兜底，避免 OOM 杀掉编译进程
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile /mnt/swapfile 2>/dev/null || true
+          if sudo fallocate -l 4G /swapfile 2>/dev/null; then
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile && echo ">>> swap 4G 已启用"
+          else
+            echo "::warning::swap 创建失败，继续（大内存 package 可能有风险）"
+          fi
+
+          echo "===== 释放后 ====="
+          df -h / | tail -1
+          free -h
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq -o Acquire::Retries=3 || sudo -E apt-get update -qq
+          for i in 1 2 3; do
+            if timeout 1500 sudo -E apt-get install -y --no-install-recommends \
+              ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+              build-essential bzip2 ccache clang cmake cpio curl \
+              device-tree-compiler flex gawk gcc-multilib g++-multilib \
+              genisoimage gettext git gperf haveged help2man intltool \
+              libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
+              libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+              libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+              libssl-dev libtool libxslt1-dev lld llvm lrzsz msmtp ninja-build \
+              p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+              python3-setuptools qemu-utils rsync scons squashfs-tools \
+              subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto \
+              xxd zlib1g-dev; then
+              echo ">>> 依赖安装完成"
+              break
+            fi
+            echo ">>> 第 $i 次安装失败，30 秒后重试"
+            sleep 30
+          done
+          ccache --version | head -1 || echo "::warning::ccache 不可用，本次不启用缓存"
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.TARGET }}-${{ env.SUB }}-${{ env.DEVICE }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ env.TARGET }}-${{ env.SUB }}-${{ env.DEVICE }}-
+            ccache-${{ env.TARGET }}-${{ env.SUB }}-
+
+      - name: 更新并安装 feeds
+        run: |
+          for i in 1 2 3; do
+            if ./scripts/feeds update -a && ./scripts/feeds install -a; then
+              echo ">>> feeds 完成"
+              break
+            fi
+            echo ">>> 第 $i 次 feeds 失败，20 秒后重试"
+            rm -rf feeds
+            sleep 20
+            [ "$i" = "3" ] && exit 1
+          done
+
+          # 默认主题：luci / luci-light 集合原本依赖 luci-theme-bootstrap，
+          # 改成依赖 argon，这样 argon 成为唯一（默认）主题
+          for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
+            [ -f "$f" ] && sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' "$f"
+          done
+          echo "===== 集合默认主题 ====="
+          grep -H "luci-theme-argon" feeds/luci/collections/*/Makefile 2>/dev/null || true
+
+      - name: 生成 .config（TR3000 512MB + ccache + argon）
+        run: |
+          mkdir -p tmp
+          cat > gen_config.py <<'PY'
+          import os, re, sys
+
+          want = ["cudy_tr3000-512mb-v1"]
+          norm = lambda s: re.sub(r"[^a-z0-9]", "_", s.lower())
+
+          meta = open("tmp/.config-target.in", encoding="utf-8", errors="replace").read()
+
+          # 机型符号在元数据里是：menuconfig TARGET_DEVICE_<t>_<s>_DEVICE_<dev>
+          raw = re.findall(r"^\s*menuconfig\s+(TARGET_DEVICE_mediatek_filogic_DEVICE_\S+)\s*$",
+                           meta, re.M)
+          pref = "TARGET_DEVICE_mediatek_filogic_DEVICE_"
+          syms = {}
+          for s in raw:
+              syms[norm(s[len(pref):])] = "CONFIG_" + s
+          print("元数据 filogic 机型符号: %d 行 -> %d 个唯一机型" % (len(raw), len(syms)))
+          if not syms:
+              print("::error::元数据里没有 filogic 机型符号（tmp/.config-target.in 不完整）")
+              sys.exit(1)
+
+          multi = "TARGET_MULTI_PROFILE" in meta
+          print("元数据含 Target Devices 菜单（需 MULTI_PROFILE）: %s" % multi)
+
+          picked, missing = [], []
+          for d in want:
+              s = syms.get(norm(d))
+              (picked.append(s) if s else missing.append(d))
+          if missing:
+              print("::error::源码树中不存在这些机型: %s" % " ".join(missing))
+              sys.exit(1)
+
+          pkgs = ["luci-theme-argon", "luci-app-argon-config"]
+          lines = ["CONFIG_TARGET_mediatek=y",
+                   "CONFIG_TARGET_mediatek_filogic=y",
+                   "CONFIG_DEVEL=y",
+                   "CONFIG_CCACHE=y"]
+          if multi:
+              lines += ["CONFIG_TARGET_MULTI_PROFILE=y",
+                        "# CONFIG_TARGET_ALL_PROFILES is not set",
+                        "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"]
+          lines += ["%s=y" % s for s in picked]
+          lines += ["CONFIG_PACKAGE_%s=y" % p for p in pkgs]
+          open(".config", "w").write("\n".join(lines) + "\n")
+          print("已写入 1 台机型 + %d 个额外包: %s" % (len(pkgs), " ".join(pkgs)))
+          PY
+
+          cat > verify_config.py <<'PY'
+          import re, sys
+
+          want = ["cudy_tr3000-512mb-v1"]
+          cfg = open(".config", encoding="utf-8", errors="replace").read()
+          norm = lambda s: re.sub(r"[^a-z0-9]", "_", s.lower())
+          got = {norm(m) for m in
+                 re.findall(r"^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_(\S+)=y$", cfg, re.M)}
+          wset = {norm(w): w for w in want}
+          lost = [w for k, w in wset.items() if k not in got]
+          print("预期 %d 台，.config 实际选中 %d 台" % (len(wset), len(got & set(wset))))
+          if lost:
+              print("::warning::被 kconfig 丢弃 %d 台: %s" % (len(lost), " ".join(lost)))
+              mp = [l.strip() for l in cfg.splitlines() if "MULTI_PROFILE" in l]
+              print("MULTI_PROFILE 状态: %s" % (mp or "（.config 里没有该符号）"))
+              sys.exit(1)
+          for p in ("luci-theme-argon", "luci-app-argon-config"):
+              flag = "CONFIG_PACKAGE_%s=y" % p
+              print(("OK   " if flag in cfg else "WARN ") + flag)
+          if "CONFIG_PACKAGE_luci-theme-bootstrap=y" in cfg:
+              print("::warning::bootstrap 仍被其他包依赖（argon 仍为默认主题，由 uci-defaults 保证）")
+          else:
+              print("主题: bootstrap 未安装，argon 为唯一主题")
+          PY
+
+          ok=0
+          for attempt in 1 2 3; do
+            echo "::group::第 ${attempt} 次生成 .config"
+
+            # 1) defconfig 前置：生成权威 target/package 元数据
+            if ! make -j1 prepare-tmpinfo > prepare.log 2>&1; then
+              tail -40 prepare.log
+              echo "::endgroup::"
+              echo "::error::prepare-tmpinfo 失败（主机依赖缺失或 package 元数据有错），见上方日志"
+              exit 1
+            fi
+            grep -E "Please install|Build dependency|Failed to build" prepare.log | head -10 || true
+
+            # 2) 从权威元数据里找机型符号（机型名归一化匹配，不手写 kconfig 符号）
+            python3 gen_config.py
+
+            # 3) defconfig —— kconfig 遇递归依赖时仍会写出 .config 并 exit 0，只能事后复核
+            if ! make -j1 defconfig > defconfig.log 2>&1; then
+              tail -40 defconfig.log
+              echo "::endgroup::"
+              echo "::error::make defconfig 执行失败"
+              exit 1
+            fi
+
+            # 4) 复核机型确实被选中
+            vrc=0
+            python3 verify_config.py || vrc=$?
+            if [ "$vrc" = "0" ]; then
+              ok=1
+              echo "::endgroup::"
+              break
+            fi
+
+            # 5) feed 的 Kconfig 递归依赖：禁用问题包后重试
+            if grep -q "recursive dependency detected" defconfig.log; then
+              echo "::warning::检测到 Kconfig 递归依赖（feed 元数据 bug），禁用问题包后重试"
+              bad=$(grep -oE "symbol PACKAGE_[A-Za-z0-9_.+-]+ depends on PACKAGE_" defconfig.log \
+                    | sed -E 's/^symbol PACKAGE_([^ ]+) .*/\1/' | sort -u)
+              echo "问题包: ${bad:-（未解析出包名）}"
+              changed=0
+              for p in $bad; do
+                case "$p" in
+                  luci-theme-argon|luci-app-argon-config)
+                    echo "::error::$p 属于必需包，不能自动禁用，请手工修 feed"; echo "::endgroup::"; exit 1 ;;
+                esac
+                while IFS= read -r d; do
+                  [ -z "$d" ] && continue
+                  if [ -f "$d/Makefile" ]; then
+                    mv "$d/Makefile" "$d/Makefile.disabled"
+                    echo "已禁用: $d"
+                    changed=1
+                  fi
+                done < <(find package feeds -maxdepth 4 -type d -name "$p" 2>/dev/null)
+              done
+              [ "$changed" = "1" ] || { echo "::error::未能禁用任何问题包"; echo "::endgroup::"; exit 1; }
+              make -j1 prepare-tmpinfo > /dev/null 2>&1 || true
+              continue
+            fi
+
+            echo "::endgroup::"
+            echo "::error::机型复核失败且不是递归依赖问题，详见上方 verify 输出"
+            exit 1
+          done
+          [ "$ok" = "1" ] || { echo "::error::3 次尝试都失败"; exit 1; }
+
+          # argon 作为默认主题：99 号 uci-defaults 晚于主题包自带的 30_luci-theme-*，
+          # 启动时强制把 mediaurlbase 指向 argon，避免 bootstrap 抢默认
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-luci-theme-argon <<'SH'
+          #!/bin/sh
+          uci -q set luci.themes.Argon='/luci-static/argon'
+          uci -q set luci.main.mediaurlbase='/luci-static/argon'
+          uci -q commit luci
+          exit 0
+          SH
+          chmod +x files/etc/uci-defaults/99-luci-theme-argon
+
+          grep -q '^CONFIG_TARGET_mediatek=y' .config && echo "目标: mediatek/filogic"
+          grep -q '^CONFIG_CCACHE=y' .config && echo "ccache: 已启用" || echo "::warning::ccache 未启用"
+
+      - name: 下载源码包
+        run: |
+          for i in 1 2 3; do
+            if make -j8 download < /dev/null; then
+              echo ">>> 下载完成"
+              break
+            fi
+            echo ">>> 第 $i 次下载有失败项，重试"
+            sleep 15
+          done
+          # 清单里没下全的单独再拉一遍（不阻塞编译）
+          make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 编译固件
+        run: |
+          export CCACHE_DIR CCACHE_MAXSIZE CCACHE_COMPRESS CCACHE_NOHASHDIR
+          mkdir -p "$CCACHE_DIR"
+          ccache -s 2>/dev/null || true
+          set -o pipefail
+          # tools 阶段串行：ccache 4.10 的 CMake 在 configure 时会从网上抓
+          # Xxhash / Doctest，并行编译 tools 时多个任务抢带宽，十几秒内下载
+          # 超时就会 "ERROR: tools/ccache failed to build"；串行 + 重试可避免
+          # 这种非确定性失败（主包编译仍然并行，不影响整体速度太多）
+          echo ">>> 串行预编译 host tools"
+          t_ok=1
+          if make -n tools/compile >/dev/null 2>&1; then
+            t_ok=0
+            for i in 1 2 3; do
+              if make tools/compile -j1 2>&1 | tee tools.log; then t_ok=1; break; fi
+              echo "::warning::tools 编译第 $i 次失败，10 秒后重试"
+              sleep 10
+            done
+          else
+            echo "::warning::本仓库没有 tools/compile 目标，跳过串行预编译"
+          fi
+          if [ "$t_ok" != "1" ]; then
+            echo "::error::host tools 编译失败（见 tools.log）"
+            tail -100 tools.log || true
+            exit 1
+          fi
+          echo ">>> 并行编译 make -j$(nproc)"
+          if make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo ">>> ✅ 编译成功"
+          else
+            echo "::warning::并行编译失败，改用单线程 V=s 复现真实错误"
+            make -j1 V=s 2>&1 | tee -a error.log || true
+            echo "===== error.log 尾部 150 行 ====="
+            tail -150 error.log || true
+            ccache -s 2>/dev/null || true
+            exit 1
+          fi
+          ccache -s 2>/dev/null || true
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-tr3000-512mb
+          path: |
+            build.log
+            error.log
+            tools.log
+            .config
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          d="bin/targets/$TARGET/$SUB"
+          if [ -d "$d" ]; then
+            # 多分区 uboot 刷不进 initramfs-kernel.bin，只收集可直接刷 490M ubi 分区的
+            # squashfs-sysupgrade.bin（外加元数据文件）
+            find "$d" -maxdepth 1 -type f \
+              \( -name '*squashfs-sysupgrade.bin' -o -name 'sha256sums' -o -name 'profiles.json' \
+                 -o -name '*.buildinfo' -o -name '*.manifest' \) \
+              -exec cp {} out/ \; 2>/dev/null || true
+          fi
+          echo "===== 产物 ====="
+          ls -lh out || true
+          if ! ls out 2>/dev/null | grep -qE "tr3000-512mb.*-squashfs-sysupgrade\.bin"; then
+            echo "::error::没有找到 tr3000-512mb 的 squashfs-sysupgrade.bin（$d）"
+            ls -la "$d" 2>/dev/null || true
+            exit 1
+          fi
+          if ls out 2>/dev/null | grep -q "initramfs"; then
+            echo "::error::initramfs 镜像不应出现在产物里"; exit 1
+          fi
+          {
+            echo "## 🏗️ Cudy TR3000 512MB 编译完成"
+            echo ""
+            echo "- target: \`$TARGET/$SUB\`，device: \`$DEVICE\`"
+            echo ""
+            echo "| 文件 | 大小 |"
+            echo "|---|---|"
+            ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-tr3000-512mb
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: ${{ github.event_name == 'schedule' || inputs.make_release != false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="immortalwrt-tr3000-512mb-$(TZ=Asia/Shanghai date +%Y%m%d)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            OLD="$TAG"
+            TAG="${TAG}-r${GITHUB_RUN_NUMBER}"
+            echo "::warning::${OLD} 已存在（历史保留），本次使用 ${TAG}"
+          fi
+
+          cat > notes.md <<EOF
+          ImmortalWrt 24.10-6.6 自动编译：Cudy TR3000 512MB（v1，NAND 512MB）
+
+          - 触发方式: ${{ github.event_name }}
+          - 设备: cudy_tr3000-512mb-v1（mediatek / filogic）
+          - 分区: ubi 0x005c0000 + 0x1FA40000（约 506MB 可用）
+          - 默认主题: argon
+          - 提交: ${{ github.sha }}
+          - 日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - 默认 IP: 192.168.1.1 / 用户名 root / 无密码
+
+          刷机说明：本机是多分区 uboot，initramfs-kernel.bin 刷不进，
+          Release 里只放可直接刷 490M ubi 分区的 squashfs-sysupgrade.bin；
+          原厂固件需先在 Cudy 后台刷过渡固件（或使用 u-boot mod 版）。
+          EOF
+
+          ls -lh out/
+          gh release create "$TAG" out/* \
+            --title "ImmortalWrt TR3000 512MB ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+            --notes-file notes.md
+          echo ">>> 已发布: $TAG"

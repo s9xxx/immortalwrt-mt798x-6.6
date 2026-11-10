@@ -885,6 +885,13 @@ enum FoeIpAct {
 #else
 #define NR_WHNAT_WDMA_PORT 3
 #define NR_PPE0_PORT 4
+/*
+ * NETSYS V1 (mt7622/mt7623/mt7629) 只有 PPE0，没有 PPE1。
+ * 但 BITS_GDM_*_P_PPE1 系列宏在 hnat.c 的 set_gmac_ppe_fwd() 中被
+ * CFG_PPE_NUM>1 的运行时分支无条件展开（宏展开不受 #if 保护），
+ * 必须给出定义才能编译；V1 上该分支永不执行，取值无副作用。
+ */
+#define NR_PPE1_PORT 4
 #endif
 #define NR_QDMA_PORT 5
 #define NR_DISCARD 7

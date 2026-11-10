@@ -169,7 +169,12 @@ diff -u -r a/drivers/net/ethernet/mediatek/mtk_eth_soc.h b/drivers/net/ethernet/
  			ret = -ENOMEM;
 --- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c	2025-06-15 22:32:46.130001496 +0800
 +++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c	2025-06-18 00:22:51.492001032 +0800
-@@ -39,11 +39,14 @@
+@@ -35,15 +35,20 @@
+ #include "mtk_eth_soc.h"
+ #include "mtk_eth_dbg.h"
+ #include "mtk_wed.h"
++#include "mtk_eth_reset.h"
+ 
  #if defined(CONFIG_NET_MEDIATEK_HNAT) || defined(CONFIG_NET_MEDIATEK_HNAT_MODULE)
  #include "mtk_hnat/nf_hnat_mtk.h"
  #endif
@@ -181,7 +186,7 @@ diff -u -r a/drivers/net/ethernet/mediatek/mtk_eth_soc.h b/drivers/net/ethernet/
  static int mtk_msg_level = -1;
  module_param_named(msg_level, mtk_msg_level, int, 0);
  MODULE_PARM_DESC(msg_level, "Message level (-1=defaults,0=none,...,16=all)");
--
+ 
 +DECLARE_COMPLETION(wait_ser_done);
  #define MTK_ETHTOOL_STAT(x) { #x, \
  			      offsetof(struct mtk_hw_stats, x) / sizeof(u64) }
@@ -207,12 +212,17 @@ diff -u -r a/drivers/net/ethernet/mediatek/mtk_eth_soc.h b/drivers/net/ethernet/
  
  	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
  		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-@@ -2474,6 +2482,9 @@
+@@ -2496,6 +2496,14 @@
  			mac = RX_DMA_GET_SPORT(trxd.rxd4) - 1;
  		}
  
++#if defined(CONFIG_NET_MEDIATEK_HNAT) || defined(CONFIG_NET_MEDIATEK_HNAT_MODULE)
 +		if ( (mac == 4) || ((FIELD_GET(MTK_RXD4_PPE_CPU_REASON, trxd.rxd4)) == HIT_BIND_FORCE_TO_CPU))
++		{
 +		mac = atomic_read(&eth1_in_br);
++		sent_ppd = 1;
++		}
++#endif
 +
  		if (unlikely(mac < 0 || mac >= MTK_MAX_DEVS ||
  			     !eth->netdev[mac]))

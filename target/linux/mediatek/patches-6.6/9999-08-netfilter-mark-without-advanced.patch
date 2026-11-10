@@ -1,0 +1,20 @@
+--- a/net/netfilter/Kconfig
++++ b/net/netfilter/Kconfig
+@@ -114,8 +114,7 @@ if NF_CONNTRACK
+ config NF_CONNTRACK_MARK
+ 	bool  'Connection mark tracking support'
+-	depends on NETFILTER_ADVANCED
+ 	help
+ 	  This option enables support for connection marks, used by the
+ 	  `CONNMARK' target and `connmark' match. Similar to the mark value
+ 	  of packets, but this mark value is kept in the conntrack session
+ 	  instead of the individual packets.
+--
+NF_CONNTRACK_MARK 在 Kconfig 里受 NETFILTER_ADVANCED 门控，而 generic/config-6.6
+把 NETFILTER_ADVANCED 设为 not set，导致 target config 里写 CONFIG_NF_CONNTRACK_MARK=y
+被 oldconfig 直接丢弃，nf_conn 不含 mark 成员；本仓库自带的 MTK vendor QoS 补丁
+（999-3003/999-3010 PPPQ 内部 QoS 模式）在 mtk_ppe_offload.c 中用 ct->mark，
+filogic 编译报 'struct nf_conn' has no member named 'mark'。
+
+不整体打开 NETFILTER_ADVANCED（会让 147 个门控符号变可见，其中 7 个在 config 中
+没有取值，非交互 syncconfig 会当 (NEW) 提问而失败），只解除这一个符号的门控。

@@ -2416,7 +2416,14 @@ mtk_hnat_inet_local_in(void *priv,
         struct net_device *real_in = NULL;
         if (!skb)
                 return NF_ACCEPT;
+        /* nf_bridge_get_physindev() 仅在 CONFIG_BRIDGE_NETFILTER 下声明（6.6.y 起为
+         * 两参数兼容封装）。generic/config-6.6 默认关闭该选项，直接调用会因缺少
+         * 函数原型而编译失败；关闭时 nf_bridge_info 不会挂载，real_in 恒为 NULL，
+         * 因此此处加编译期条件与运行行为一致。
+         */
+#ifdef CONFIG_BRIDGE_NETFILTER
         real_in = nf_bridge_get_physindev(skb, dev_net(skb->dev));
+#endif
         if (FROM_WED(skb) && (skb_hnat_reason(skb) != HIT_BIND_FORCE_TO_CPU) && is_ppe_support_type(skb)){
                 ct = nf_ct_get(skb, &ctinfo);
                 if (ct) {
