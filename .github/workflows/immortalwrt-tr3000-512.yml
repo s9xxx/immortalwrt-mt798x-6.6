@@ -154,13 +154,13 @@ jobs:
           echo "===== 集合默认主题 ====="
           grep -H "luci-theme-argon" feeds/luci/collections/*/Makefile 2>/dev/null || true
 
-      - name: 修补 libffi InstallDev（feed 里 fficonfig.h 路径已失效）
+      - name: 修补 libffi InstallDev（删除失效的 fficonfig.h 硬拷，对齐官方 24.10）
         shell: bash
         run: |
           f=feeds/packages/libs/libffi/Makefile
           if [ ! -f "$f" ]; then echo ">>> 无 $f，跳过"; exit 0; fi
-          if ! grep -qF 'GNU_TARGET_NAME)*/fficonfig.h' "$f"; then
-            echo ">>> libffi InstallDev 已是可用版本，跳过"; exit 0
+          if ! grep -qF 'fficonfig.h' "$f"; then
+            echo ">>> libffi InstallDev 无 fficonfig.h 拷贝，无需处理"; exit 0
           fi
           python3 - "$f" <<'PY'
           import re, sys
@@ -168,27 +168,26 @@ jobs:
           p = sys.argv[1]
           s = open(p, encoding="utf-8").read()
 
-          old = re.compile(
-              r"\t\$\(CP\) \\\n"
-              r"\t\t\$\(PKG_BUILD_DIR\)/\$\(GNU_TARGET_NAME\)\*/fficonfig\.h \\\n"
-              r"\t\t\$\(1\)/usr/include/\n"
-          )
-
-          new = (
-              "\t@ffi=$$(find $(PKG_BUILD_DIR) -maxdepth 3 -name fficonfig.h 2>/dev/null | head -n1); \\\n"
-              "\tif [ -n \"$$ffi\" ]; then $(CP) \"$$ffi\" $(1)/usr/include/; \\\n"
-              "\telse echo \"libffi: build_dir 未生成 fficonfig.h，跳过（仅 node-ffi-napi 需要）\"; fi\n"
-          )
-
-          if not old.search(s):
-              print("SKIP: 未找到待修补的 fficonfig.h 拷贝段（可能已被上游修好）")
-              sys.exit(0)
-
-          s2 = old.sub(new, s, count=1)
-          open(p, "w", encoding="utf-8").write(s2)
-          print("PATCHED")
+          pats = [
+              # feed 原版：$(CP) 三行硬拷 $(GNU_TARGET_NAME)*/fficonfig.h（libffi 3.4.7 已不生成该路径，
+              # openwrt/packages 官方 24.10 分支也删掉了这次拷贝；fficonfig.h 仅 node-ffi-napi 需要）
+              re.compile(r"\t\$\(CP\) \\\n\t\t\$\(PKG_BUILD_DIR\)/\$\(GNU_TARGET_NAME\)\*/fficonfig\.h \\\n\t\t\$\(1\)/usr/include/\n"),
+              # 曾被旧脚本补成的 @ffi=$(find ...) if/else 三行（make 把 $$(find ...) 后的 $(...) 当变量
+              # 引用吞掉，shell 收到的命令残缺，产生 cp: cannot stat 'fi'）
+              re.compile(r"\t@ffi=[^\n]*\\\n\tif \[ -n \"\$+ffi\" \]; then[^\n]*\\\n\telse echo [^\n]*\n"),
+          ]
+          n = 0
+          for pat in pats:
+              s, k = pat.subn("", s)
+              n += k
+          if n == 0:
+              print("SKIP: 未匹配到任何 fficonfig.h 拷贝段")
+              sys.exit(1)
+          open(p, "w", encoding="utf-8").write(s)
+          print("PATCHED: 删除了 %d 段 fficonfig.h 拷贝" % n)
           PY
-          sed -n '/define Build\/InstallDev/,/^endef/p' "$f" | tail -8
+          echo "---- 修补后的 Build/InstallDev ----"
+          sed -n '/define Build\/InstallDev/,/^endef/p' "$f"
 
       - name: 生成 .config（TR3000 512MB + ccache + argon）
         run: |
