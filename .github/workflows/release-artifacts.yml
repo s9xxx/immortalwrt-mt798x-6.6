@@ -45,19 +45,36 @@ jobs:
           [ -n "$TITLE" ] || TITLE="$TAG"
 
           echo ">>> 校验源 run: $RID"
-          gh run view "$RID" --json status,conclusion \
-            --jq '"run状态: \(.status) / \(.conclusion)"'
-          [ "$(gh run view "$RID" --json conclusion --jq .conclusion)" = "success" ] \
-            || { echo "::error::源 run 未成功，拒绝发布"; exit 1; }
+          CONC=$(gh run view "$RID" --json conclusion --jq .conclusion)
+          echo ">>> 源 run conclusion: $CONC"
+          [ "$CONC" = "success" ] || { echo "::error::源 run 未成功，拒绝发布"; exit 1; }
+
+          # 抓取 artifact 列表（--paginate 输出为拼接的 JSON 对象，交给 python3 归一）
+          gh api "actions/runs/$RID/artifacts" --paginate > /tmp/arts.raw
+          python3 - <<'PY' > /tmp/artlist
+          import json
+          raw = open('/tmp/arts.raw').read().strip()
+          dec, idx, objs = json.JSONDecoder(), 0, []
+          while idx < len(raw):
+              while idx < len(raw) and raw[idx] in ' \n\r\t': idx += 1
+              if idx >= len(raw): break
+              obj, idx = dec.raw_decode(raw, idx)
+              objs.append(obj)
+          for o in objs:
+              for a in o.get('artifacts', []):
+                  if not a.get('expired'):
+                      print(a['id'], a['name'])
+          PY
+          echo "===== artifact 列表 ====="
+          cat /tmp/artlist
+          [ -s /tmp/artlist ] || { echo "::error::没有可用 artifact"; exit 1; }
 
           mkdir -p out && cd out
-          gh api "actions/runs/$RID/artifacts" --paginate \
-            --jq '.artifacts[] | select(.expired == false) | "\(.id) \(.name)"' \
-          | while read -r id name; do
-              echo ">>> 下载 artifact: $name ($id)"
-              gh api "actions/artifacts/$id/zip" > "$name.zip"
-              unzip -q -o "$name.zip" -d . && rm -f "$name.zip"
-            done
+          while read -r id name; do
+            echo ">>> 下载 artifact: $name ($id)"
+            gh api "actions/artifacts/$id/zip" > "$name.zip"
+            unzip -q -o "$name.zip" -d . && rm -f "$name.zip"
+          done < /tmp/artlist
           echo "===== 待发布文件 ====="
           ls -lh
 
