@@ -20,7 +20,6 @@ on:
           - MTK
           - FILOGIC
           - MT7622
-          - MT7623
           - RAMIPS
       make_release:
         description: '编译完成后发布 Release'
@@ -39,7 +38,7 @@ concurrency:
 
 env:
   TZ: Asia/Shanghai
-  GROUPS_JSON: '{"MTK":[{"target":"mediatek","subs":["filogic","mt7622","mt7623"]}],"FILOGIC":[{"target":"mediatek","subs":["filogic"]}],"MT7622":[{"target":"mediatek","subs":["mt7622"]}],"MT7623":[{"target":"mediatek","subs":["mt7623"]}],"RAMIPS":[{"target":"ramips","subs":["mt7620","mt7621","mt76x8","rt288x","rt305x","rt3883"]}]}'
+  GROUPS_JSON: '{"MTK":[{"target":"mediatek","subs":["filogic","mt7622"]}],"FILOGIC":[{"target":"mediatek","subs":["filogic"]}],"MT7622":[{"target":"mediatek","subs":["mt7622"]}],"RAMIPS":[{"target":"ramips","subs":["mt7620","mt7621","mt76x8","rt288x","rt305x","rt3883"]}]}'
   EXCLUDE_JSON: '["mediatek","ramips"]'
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: 1500M
