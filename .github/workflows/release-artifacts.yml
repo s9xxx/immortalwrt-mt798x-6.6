@@ -1,0 +1,79 @@
+# 从产物补发 Release：不重新编译，把某个已完成 run 的 artifact 直接发布为 Release。
+# 用途：手动触发编译时若未勾选 make_release，编译成功但产物只在 Actions 里，
+#       用本 workflow 传入该 run 的 ID 即可补发，避免为发布重编 1.5~2 小时。
+name: 从产物补发 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: '源 run ID（Actions 页面 URL 里 /runs/ 后的数字）'
+        type: string
+        required: true
+      tag:
+        description: 'Release tag（如 immortalwrt-mtk-mediatek-filogic-20261111）'
+        type: string
+        required: true
+      title:
+        description: 'Release 标题（留空则用 tag）'
+        type: string
+        required: false
+      notes:
+        description: 'Release 说明（可多行）'
+        type: string
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 📦 补发 Release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: 下载源 run 产物并发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -e
+          RID='${{ inputs.run_id }}'
+          TAG='${{ inputs.tag }}'
+          TITLE='${{ inputs.title }}'
+          [ -n "$TITLE" ] || TITLE="$TAG"
+
+          echo ">>> 校验源 run: $RID"
+          gh run view "$RID" --json status,conclusion \
+            --jq '"run状态: \(.status) / \(.conclusion)"'
+          [ "$(gh run view "$RID" --json conclusion --jq .conclusion)" = "success" ] \
+            || { echo "::error::源 run 未成功，拒绝发布"; exit 1; }
+
+          mkdir -p out && cd out
+          gh api "actions/runs/$RID/artifacts" --paginate \
+            --jq '.artifacts[] | select(.expired == false) | "\(.id) \(.name)"' \
+          | while read -r id name; do
+              echo ">>> 下载 artifact: $name ($id)"
+              gh api "actions/artifacts/$id/zip" > "$name.zip"
+              unzip -q -o "$name.zip" -d . && rm -f "$name.zip"
+            done
+          echo "===== 待发布文件 ====="
+          ls -lh
+
+          cat > notes.md <<EOF
+          $NOTES
+
+          ---
+          - 来源: run $RID（artifact 补发）
+          - 发布时间: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M')
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG 已存在，请换一个 tag"; exit 1
+          fi
+
+          gh release create "$TAG" ./* \
+            --title "$TITLE" \
+            --notes-file notes.md
+          echo ">>> 已发布: $TAG"
