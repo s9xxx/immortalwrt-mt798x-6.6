@@ -72,7 +72,7 @@ jobs:
           mkdir -p out && cd out
           while read -r id name; do
             echo ">>> 下载 artifact: $name ($id)"
-            gh api "actions/artifacts/$id/zip" > "$name.zip"
+            gh api "repos/$GH_REPO/actions/artifacts/$id/zip" > "$name.zip"
             unzip -q -o "$name.zip" -d . && rm -f "$name.zip"
           done < /tmp/artlist
           echo "===== 待发布文件 ====="
