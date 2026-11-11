@@ -356,7 +356,11 @@ jobs:
           # DEVICE_CHECK_PROFILE 一律为 n → 日志里 "启用机型: 0 个"，world 虽然返回成功，
           # 但 bin/targets 下只有 bl2.bin，没有任何固件。这里显式打开该子目标全部机型，
           # 再跑一次 defconfig 让机型 select 出来的依赖（kmod / 固件包）自洽。
-          sed -i 's/^# \(CONFIG_TARGET_DEVICE_[A-Za-z0-9_]*\) is not set$/\1=y/' .config
+          # 机型名普遍带 "-"（bananapi_bpi-r2、xiaomi_mi-router-ax3000t …），旧写法
+          # [A-Za-z0-9_]* 只匹配无连字符的名字：mt7623 三个机型全带 "-"，一个都打不开
+          # （启用机型: 0 个）；filogic / ipq 等只是部分机型被漏掉。字符集补上 "-"，
+          # 并把 CONFIG_TARGET_<t>_<s>_DEVICE_* 这种别名形式一并打开。
+          sed -i -E 's/^# (CONFIG_TARGET_(DEVICE_[A-Za-z0-9_-]+|[A-Za-z0-9_]+_DEVICE_[A-Za-z0-9_-]+)) is not set$/\1=y/' .config
           make defconfig
           n_dev="$(grep -c '^CONFIG_TARGET_DEVICE_.*=y' .config || true)"
           n_dev="${n_dev:-0}"
