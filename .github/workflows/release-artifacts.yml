@@ -49,8 +49,8 @@ jobs:
           echo ">>> 源 run conclusion: $CONC"
           [ "$CONC" = "success" ] || { echo "::error::源 run 未成功，拒绝发布"; exit 1; }
 
-          # 抓取 artifact 列表（--paginate 输出为拼接的 JSON 对象，交给 python3 归一）
-          gh api "actions/runs/$RID/artifacts" --paginate > /tmp/arts.raw
+          # 抓取 artifact 列表（绝对路径 + 单页，规避 gh --paginate 相对路径 404）
+          gh api "repos/$GH_REPO/actions/runs/$RID/artifacts?per_page=100" > /tmp/arts.raw
           python3 - <<'PY' > /tmp/artlist
           import json
           raw = open('/tmp/arts.raw').read().strip()
