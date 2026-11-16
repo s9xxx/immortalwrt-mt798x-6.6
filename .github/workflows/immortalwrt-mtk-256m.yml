@@ -1,0 +1,481 @@
+#=====================================================================================
+# ImmortalWrt 24.10 (openwrt-24.10-6.6) — BT-R320 / RAX3000M / XR30（NAND 256M）
+#=====================================================================================
+# 机型来源：tvliving/lede 的 lede-bt-r320.yml / lede-rax3000m-256m.yml 移植
+#
+# 1) BT-R320：eMMC 机型，树内已有 bt_r320 设备（DTS mt7981b-bt-r320，root=PARTLABEL=rootfs
+#    + sysupgrade-tar），不产出 preloader/fip，沿用机器现有 U-Boot。
+# 2) RAX3000M / XR30 硬改 256M：ubi 由 114MB（0x7200000）扩到 250.5MB（0xFA80000），
+#    IMAGE_SIZE 116736k → 250880k（245MB < 250.5MB）。
+#    RAX3000M 用 cmcc_rax3000m-nand-mtk（sysupgrade-tar，不产出引导工件）；
+#    XR30 用 cmcc_xr30-nand（KERNEL_IN_UBI + sysupgrade-tar + factory.bin）。
+#    ⚠️ 这两台必须是「硬改 256M Flash + 256M 大分区 U-Boot」，128M 的机器直接刷会起不来。
+#
+# 3) 默认主题：luci-theme-vantage（https://github.com/anothaDev/luci-theme-vantage）
+#    该主题 README 明确支持 25.12 和 24.10（ucode/template + htdocs/luci-static/vantage，
+#    不是老的 LuCI Lua 模板），所以本流程用 vantage 并移除 argon。
+#    兜底：若 defconfig 后 vantage 没被选中（依赖不满足），自动回退 argon，构建不中断。
+#
+# 4) iStore 市场：官方 istore feed（linkease/istore）+ 全量简体中文语言包。
+# 5) 定时：每周二、周四 12:00（北京时间）= cron '0 4 * * 2,4'（UTC），成功后发布 Release。
+#=====================================================================================
+name: ImmortalWrt 24.10 · BT-R320 / RAX3000M / XR30 (256M)
+
+on:
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+  # 改本文件即自动跑一次，方便自测（没法用 API 触发 workflow_dispatch）
+  push:
+    branches: [openwrt-24.10-6.6]
+    paths:
+      - '.github/workflows/immortalwrt-mtk-256m.yml'
+      - 'target/linux/mediatek/image/filogic.mk'
+      - 'target/linux/mediatek/dts/mt7981b-bt-r320.dts'
+      - 'target/linux/mediatek/dts/mt7981b-cmcc-rax3000m-nand-mtk.dts'
+      - 'target/linux/mediatek/dts/mt7981b-cmcc-xr30-nand.dts'
+  schedule:
+    # 周二、周四 12:00（北京时间）；GitHub cron 用 UTC，04:00 UTC = 12:00 UTC+8
+    - cron: '0 4 * * 2,4'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  THEME_REPO: https://github.com/anothaDev/luci-theme-vantage
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1500M
+  CCACHE_COMPRESS: 'true'
+  CCACHE_NOHASHDIR: 'true'
+
+jobs:
+  build:
+    name: 🏗️ BT-R320 / RAX3000M / XR30 (256M)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 释放磁盘空间并加大 swap
+        run: |
+          echo "===== 释放前 ====="
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+          sudo rm -rf /snap /var/lib/snapd 2>/dev/null || true
+          sudo journalctl --vacuum-size=32M 2>/dev/null || true
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+          if sudo fallocate -l 4G /swapfile 2>/dev/null; then
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile && echo ">>> swap 4G 已启用"
+          else
+            echo "::warning::swap 创建失败，继续"
+          fi
+          echo "===== 释放后 ====="
+          df -h / | tail -1
+          free -h
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq -o Acquire::Retries=3 || sudo -E apt-get update -qq
+          for i in 1 2 3; do
+            if timeout 1500 sudo -E apt-get install -y --no-install-recommends \
+              ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+              build-essential bzip2 ccache clang cmake cpio curl \
+              device-tree-compiler flex gawk gcc-multilib g++-multilib \
+              genisoimage gettext git gperf haveged help2man intltool \
+              libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
+              libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+              libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev \
+              libssl-dev libtool libxslt1-dev lld llvm lrzsz msmtp ninja-build \
+              p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+              python3-setuptools qemu-utils rsync scons squashfs-tools \
+              subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto \
+              xxd zlib1g-dev; then
+              echo ">>> 依赖安装完成"
+              break
+            fi
+            echo ">>> 第 $i 次安装失败，30 秒后重试"
+            sleep 30
+          done
+          ccache --version | head -1 || echo "::warning::ccache 不可用"
+
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-mtk-256m-${{ github.run_id }}
+          restore-keys: |
+            ccache-mtk-256m-
+            ccache-mediatek-filogic-
+
+      - name: 校验机型定义（filogic.mk + DTS）
+        run: |
+          echo "================= 最新提交 ================="
+          git log -1 --format="commit: %H  date: %ci"
+          echo "================= 机型检查 ================="
+          set -e
+          for pair in bt_r320:mt7981b-bt-r320 \
+                      cmcc_rax3000m-nand-mtk:mt7981b-cmcc-rax3000m-nand-mtk \
+                      cmcc_xr30-nand:mt7981b-cmcc-xr30-nand; do
+            d=${pair%%:*}; f=${pair##*:}
+            grep -q "define Device/${d}\$" target/linux/mediatek/image/filogic.mk \
+              || { echo "::error::filogic.mk 中没有设备 ${d}"; exit 1; }
+            test -f "target/linux/mediatek/dts/${f}.dts" \
+              || { echo "::error::缺少 DTS: ${f}.dts"; exit 1; }
+            echo "✔ ${d}（DTS ${f}.dts）"
+          done
+          # 这三台都不应该产出引导工件（preloader/fip/gpt）——历史变砖教训
+          if awk '/^define Device\/(bt_r320|cmcc_rax3000m-nand-mtk|cmcc_xr30-nand)$/,/^TARGET_DEVICES \+= /' \
+               target/linux/mediatek/image/filogic.mk | grep -nE 'ARTIFACTS|mt798x-gpt|preloader|bl31-uboot'; then
+            echo "::warning::上述设备块里出现引导工件定义（会额外产出 BL2/FIP），发布时会过滤掉"
+          fi
+
+      - name: 更新 feeds + iStore 市场
+        run: |
+          # iStore 官方源（市场 + 中文语言包）
+          grep -q 'src-git istore' feeds.conf.default \
+            || echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+          for i in 1 2 3; do
+            if ./scripts/feeds update -a && ./scripts/feeds install -a; then
+              echo ">>> feeds 完成"
+              break
+            fi
+            echo ">>> 第 $i 次 feeds 失败，20 秒后重试"
+            rm -rf feeds
+            sleep 20
+            [ "$i" = "3" ] && exit 1
+          done
+          ./scripts/feeds install -d y -p istore luci-app-store || true
+          ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || true
+          test -f feeds/luci/applications/luci-app-store/Makefile \
+            || { echo "::error::iStore 市场包缺失（luci-app-store）"; exit 1; }
+          echo "✔ iStore 市场就绪"
+
+      - name: 准备默认主题（vantage，24.10 支持；不可用则回退 argon）
+        run: |
+          THEME=vantage
+          git clone -q --depth 1 "$THEME_REPO" /tmp/vantage-theme || true
+          if [ -d /tmp/vantage-theme/luci-theme-vantage ]; then
+            cp -a /tmp/vantage-theme/luci-theme-vantage package/
+            [ -d /tmp/vantage-theme/luci-app-vantage ] && cp -a /tmp/vantage-theme/luci-app-vantage package/
+          fi
+
+          # 结构校验：24.10 的 LuCI 用 ucode 模板 + htdocs/luci-static/<name>，
+          # 老式 Lua 主题（luasrc/view/*.htm）在 24.10 上跑不起来，直接回退
+          if [ -f package/luci-theme-vantage/Makefile ] \
+             && [ -d package/luci-theme-vantage/htdocs/luci-static/vantage ] \
+             && [ -d package/luci-theme-vantage/ucode/template/themes/vantage ]; then
+            echo "✔ vantage 主题结构符合 24.10（ucode 模板 + luci-static/vantage）"
+            grep -E '^PKG_VERSION|^LUCI_DEPENDS' package/luci-theme-vantage/Makefile || true
+          else
+            echo "::warning::vantage 主题不可用（克隆失败或结构不兼容 24.10），回退 argon"
+            THEME=argon
+            rm -rf package/luci-theme-vantage package/luci-app-vantage
+          fi
+          echo "$THEME" > "$GITHUB_WORKSPACE/.theme"
+          echo ">>> 本次默认主题: $THEME"
+
+      - name: 扩分区到 256M（DTS ubi + filogic.mk IMAGE_SIZE）
+        run: |
+          python3 - <<'PYEOF'
+          import io, re
+
+          def load(p):
+              return io.open(p, encoding='utf-8', newline='').read()
+
+          def save(p, s):
+              io.open(p, 'w', encoding='utf-8', newline='').write(s)
+
+          OLD = 'reg = <0x580000 0x7200000>;'   # 原厂 128M：ubi 114MB
+          NEW = 'reg = <0x580000 0xFA80000>;'   # 硬改 256M：0x10000000 - 0x580000 = 250.5MB
+
+          # ---- 1) DTS：两台 256M 机型的 ubi 分区扩到 250.5MB ----
+          for dev in ('cmcc-rax3000m-nand-mtk', 'cmcc-xr30-nand'):
+              p = 'target/linux/mediatek/dts/mt7981b-%s.dts' % dev
+              s = load(p)
+              if NEW not in s:
+                  assert s.count(OLD) == 1, '%s 的 ubi 分区锚点异常: %d 处' % (dev, s.count(OLD))
+                  save(p, s.replace(OLD, NEW))
+              s = load(p)
+              assert NEW in s, '%s ubi 分区替换失败' % dev
+              print('✔ %s: ubi 分区已扩为 250.5MB' % dev)
+
+          # ---- 2) filogic.mk：IMAGE_SIZE 116736k -> 250880k（245MB < 250.5MB）----
+          p = 'target/linux/mediatek/image/filogic.mk'
+          s = load(p)
+          for dev in ('cmcc_rax3000m-nand-mtk', 'cmcc_xr30-nand'):
+              m = re.search(r'define Device/%s\n(.*?)\nendef' % re.escape(dev), s, re.S)
+              assert m, 'filogic.mk 中找不到 %s 设备块' % dev
+              block = m.group(1)
+              if 'IMAGE_SIZE := 250880k' not in block:
+                  assert 'IMAGE_SIZE := 116736k' in block, '%s 的 IMAGE_SIZE 锚点异常' % dev
+                  s = s[:m.start(1)] + block.replace('IMAGE_SIZE := 116736k', 'IMAGE_SIZE := 250880k') + s[m.end(1):]
+                  print('✔ %s: IMAGE_SIZE -> 250880k' % dev)
+          save(p, s)
+          s = load(p)
+          assert s.count('IMAGE_SIZE := 250880k') >= 2, 'IMAGE_SIZE 未全部改到位'
+          print('✔ filogic.mk 校验通过')
+          PYEOF
+
+          echo "===== 校验 ====="
+          grep -n "reg = <0x580000" target/linux/mediatek/dts/mt7981b-cmcc-rax3000m-nand-mtk.dts \
+                                            target/linux/mediatek/dts/mt7981b-cmcc-xr30-nand.dts
+          grep -n "IMAGE_SIZE" target/linux/mediatek/image/filogic.mk | grep 250880k
+
+      - name: 生成 .config（3 机型 + WiFi + iStore + 中文 + 主题）
+        run: |
+          set -e
+          theme=$(cat "$GITHUB_WORKSPACE/.theme")
+
+          gen() {  # $1 = vantage|argon
+            : > .config
+            cat >> .config <<'CFG'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+          CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_bt_r320=y
+          CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_rax3000m-nand-mtk=y
+          CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_cmcc_xr30-nand=y
+          CONFIG_DEVEL=y
+          CONFIG_CCACHE=y
+          CONFIG_PACKAGE_kmod-mt7915e=y
+          CONFIG_PACKAGE_kmod-mt7981-firmware=y
+          CONFIG_PACKAGE_mt7981-wo-firmware=y
+          CONFIG_PACKAGE_wpad-openssl=y
+          CONFIG_PACKAGE_wireless-regdb=y
+          CONFIG_PACKAGE_iwinfo=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-i18n-store-zh-cn=y
+          CONFIG_PACKAGE_libmbedtls=y
+          CONFIG_PACKAGE_libustream-mbedtls=y
+          # CONFIG_SIGNED_PACKAGES is not set
+          # CONFIG_SIGNATURE_CHECK is not set
+          CFG
+            if [ "$1" = "vantage" ]; then
+              {
+                echo "CONFIG_PACKAGE_luci-theme-vantage=y"
+                echo "CONFIG_PACKAGE_luci-app-vantage=y"
+              } >> .config
+            else
+              {
+                echo "CONFIG_PACKAGE_luci-theme-argon=y"
+                echo "CONFIG_PACKAGE_luci-app-argon-config=y"
+              } >> .config
+            fi
+            # luci / luci-light 集合原本依赖 bootstrap，改成依赖本次要用的主题
+            for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
+              [ -f "$f" ] && sed -i -E "s/luci-theme-(bootstrap|vantage|argon)/luci-theme-$1/g" "$f"
+            done
+            make defconfig > /dev/null
+          }
+
+          gen "$theme"
+          if [ "$theme" = "vantage" ] && ! grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config; then
+            echo "::warning::vantage 主题在 24.10 下依赖不满足（未被 defconfig 选中），回退 argon"
+            theme=argon
+            echo "$theme" > "$GITHUB_WORKSPACE/.theme"
+            gen "$theme"
+          fi
+
+          # 全量简体中文语言包：把本次构建里存在的 luci-i18n-*-zh-cn 全部显式选入
+          awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
+          make defconfig > /dev/null
+
+          # 默认主题兜底：99 号 uci-defaults 晚于主题包自带的 30_*，启动时强制指向本主题
+          mkdir -p files/etc/uci-defaults
+          if [ "$theme" = "vantage" ]; then
+            cat > files/etc/uci-defaults/99-luci-theme-vantage <<'SH'
+          #!/bin/sh
+          uci -q set luci.themes.Vantage='/luci-static/vantage'
+          uci -q set luci.main.mediaurlbase='/luci-static/vantage'
+          uci -q commit luci
+          exit 0
+          SH
+            chmod +x files/etc/uci-defaults/99-luci-theme-vantage
+          else
+            cat > files/etc/uci-defaults/99-luci-theme-argon <<'SH'
+          #!/bin/sh
+          uci -q set luci.themes.Argon='/luci-static/argon'
+          uci -q set luci.main.mediaurlbase='/luci-static/argon'
+          uci -q commit luci
+          exit 0
+          SH
+            chmod +x files/etc/uci-defaults/99-luci-theme-argon
+          fi
+
+          echo "===== 校验 ====="
+          n_dev=$(grep -cE '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || true)
+          echo "启用机型: $n_dev 个"
+          grep -E '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config
+          [ "$n_dev" -eq 3 ] || { echo "::error::机型数量应为 3，实际 $n_dev"; exit 1; }
+          for p in luci-app-store luci-i18n-base-zh-cn "luci-theme-$theme"; do
+            grep -qE "^CONFIG_PACKAGE_${p}=y$" .config || { echo "::error::${p} 未生效"; exit 1; }
+          done
+          n=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          [ "$n" -ge 5 ] || { echo "::error::简体中文语言包数量异常：$n"; exit 1; }
+          echo "✔ 中文语言包 $n 个；主题 $theme；iStore 已选入"
+          grep -E "CONFIG_PACKAGE_(kmod-mt7915e|kmod-mt7981-firmware|mt7981-wo-firmware|wpad-openssl)=" .config
+          grep -q "CONFIG_SIGNED_PACKAGES is not set" .config \
+            || { echo "::error::包索引签名未关闭，package/index 会因缺 usign 失败"; exit 1; }
+
+      - name: 下载源码包
+        run: |
+          for i in 1 2 3; do
+            if make -j8 download < /dev/null; then
+              echo ">>> 下载完成"
+              break
+            fi
+            echo ">>> 第 $i 次下载有失败项，重试"
+            sleep 15
+          done
+          make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 编译固件
+        run: |
+          export CCACHE_DIR CCACHE_MAXSIZE CCACHE_COMPRESS CCACHE_NOHASHDIR
+          mkdir -p "$CCACHE_DIR"
+          ccache -s 2>/dev/null || true
+          set -o pipefail
+          echo ">>> 并行编译 make -j$(nproc)"
+          if make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo ">>> ✅ 编译成功"
+          else
+            echo "::warning::并行编译失败，改用单线程 V=s 复现真实错误"
+            make -j1 V=s 2>&1 | tee -a error.log || true
+            echo "===== error.log 尾部 150 行 ====="
+            tail -150 error.log || true
+            # 日志要登录才能看，annotation 匿名可读，方便外面定位
+            detail=$(grep -E 'error:|Error [0-9]+|\*\*\* \[' error.log | tail -12 \
+                     | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            [ -n "$detail" ] || detail=$(tail -12 error.log | sed -e 's/%/%25/g' -e 's/\r//g' -e 's/$/%0A/' | tr -d '\n')
+            echo "::error title=真实报错::${detail}"
+            exit 1
+          fi
+          ccache -s 2>/dev/null || true
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-mtk-256m
+          path: |
+            build.log
+            error.log
+            .config
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 收集并校验产物
+        run: |
+          set -e
+          B=bin/targets/mediatek/filogic
+          mkdir -p out
+          ls -lh "$B" | head -40
+          for d in bt_r320 cmcc_rax3000m-nand-mtk cmcc_xr30-nand; do
+            cp -f "$B"/*"$d"*squashfs-sysupgrade* out/ 2>/dev/null || true
+            cp -f "$B"/*"$d"*squashfs-factory*    out/ 2>/dev/null || true
+            cp -f "$B"/*"$d"*initramfs*           out/ 2>/dev/null || true
+            ls out/*"$d"*sysupgrade* >/dev/null 2>&1 \
+              || { echo "::error::$d 没有产出 sysupgrade 固件"; exit 1; }
+            echo "✔ $d 产物就绪"
+          done
+          cp -f "$B"/sha256sums "$B"/profiles.json out/ 2>/dev/null || true
+
+          # 安全护栏：绝不发布引导工件（在老 U-Boot 上刷 preloader 会写坏 BL2 变砖）
+          if ls out/ | grep -E 'preloader|bl31-uboot|gpt\.bin|sysupgrade\.itb' ; then
+            echo "::error::产物里出现引导工件（preloader/bl31-uboot/gpt/sysupgrade.itb），已中止发布"
+            exit 1
+          fi
+          n=$(ls out | wc -l)
+          [ "$n" -gt 0 ] || { echo "::error::out 目录为空"; exit 1; }
+          echo ">>> 共 $n 个文件"
+          ls -lh out
+          {
+            echo "## 🏗️ MTK 256M 三机型编译完成"
+            echo ""
+            echo "| 文件 | 大小 |"
+            echo "|---|---|"
+            ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-mtk-256m
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: 发布 Release
+        if: ${{ github.event_name == 'schedule' || inputs.make_release != false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -e
+          theme=$(cat "$GITHUB_WORKSPACE/.theme")
+          TAG="immortalwrt-mtk-256m-$(TZ=Asia/Shanghai date +%Y%m%d)"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            OLD="$TAG"
+            TAG="${TAG}-r${GITHUB_RUN_NUMBER}"
+            echo "::warning::${OLD} 已存在（历史保留），本次使用 ${TAG}"
+          fi
+
+          {
+            echo "### ImmortalWrt 24.10-6.6 · BT-R320 / RAX3000M / XR30 (256M)"
+            echo "- 源码：[${{ github.repository }}](${{ github.server_url }}/${{ github.repository }}/tree/${GITHUB_REF_NAME})"
+            echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
+            echo "- 触发方式：${{ github.event_name }}"
+            echo "- 提交：${{ github.sha }}"
+            echo "- 默认主题：${theme}（luci-theme-vantage，24.10 兼容）"
+            echo "- 市场/语言：iStore（luci-app-store）+ 全量简体中文语言包"
+            echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
+            echo ""
+            echo "| 机型 | 说明 |"
+            echo "|---|---|"
+            echo "| bt_r320 | eMMC，sysupgrade-tar，沿用现有 U-Boot |"
+            echo "| cmcc_rax3000m-nand-mtk | NAND 硬改 256M：ubi 114MB→250.5MB，sysupgrade-tar |"
+            echo "| cmcc_xr30-nand | NAND 硬改 256M：ubi 114MB→250.5MB，factory + sysupgrade |"
+            echo ""
+            echo "> ⚠️ RAX3000M / XR30 必须是**硬改 256M Flash + 256M 大分区 U-Boot**；"
+            echo "> 原厂 128M 机器刷了起不来。BT-R320 为 eMMC 机型，直接用 sysupgrade 升级。"
+            echo "> 本 Release 不包含 preloader / bl31-uboot / gpt，不需要也不应该刷引导。"
+            echo ""
+            echo "### 文件列表"
+            ls out
+          } > notes.md
+
+          gh release create "$TAG" out/* \
+            --title "ImmortalWrt 24.10 MTK 256M ($(TZ=Asia/Shanghai date +%Y-%m-%d))" \
+            --notes-file notes.md
+          echo ">>> 已发布: $TAG"
