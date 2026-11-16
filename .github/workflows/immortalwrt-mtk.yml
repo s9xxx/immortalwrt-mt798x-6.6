@@ -26,8 +26,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # 每周一、周四 07:00（北京时间）
-    - cron: '0 23 * * 0,3'
+    # 每周二、周四 12:00（北京时间）；GitHub cron 用 UTC，04:00 UTC = 12:00 UTC+8
+    - cron: '0 4 * * 2,4'
 
 permissions:
   contents: write
@@ -265,8 +265,10 @@ jobs:
             ccache-${{ matrix.label }}-
             ccache-${{ matrix.target }}-
 
-      - name: 更新并安装 feeds
+      - name: 更新并安装 feeds（含 iStore 市场）
         run: |
+          # 主题 / iStore / 中文包的统一逻辑在 .github/scripts/vendor.sh，四个 workflow 共用
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" feed
           for i in 1 2 3; do
             if ./scripts/feeds update -a && ./scripts/feeds install -a; then
               echo ">>> feeds 完成"
@@ -277,14 +279,9 @@ jobs:
             sleep 20
             [ "$i" = "3" ] && exit 1
           done
-
-          # 默认主题：luci / luci-light 集合原本依赖 luci-theme-bootstrap，
-          # 改成依赖 argon，这样 argon 成为唯一（默认）主题
-          for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
-            [ -f "$f" ] && sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' "$f"
-          done
-          echo "===== 集合默认主题 ====="
-          grep -H "luci-theme-argon" feeds/luci/collections/*/Makefile 2>/dev/null || true
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" store
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" theme
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" collections
 
       - name: 修补 libffi InstallDev（删除失效的 fficonfig.h 硬拷，对齐官方 24.10）
         shell: bash
@@ -321,7 +318,7 @@ jobs:
           echo "---- 修补后的 Build/InstallDev ----"
           sed -n '/define Build\/InstallDev/,/^endef/p' "$f"
 
-      - name: 生成 .config（target / subtarget + ccache + argon 主题）
+      - name: 生成 .config（target / subtarget + ccache + vantage 主题 + iStore + 中文）
         run: |
           T='${{ matrix.target }}'
           S='${{ matrix.sub }}'
@@ -338,8 +335,10 @@ jobs:
           # CCACHE 的提示项带 "if DEVEL"，未开 DEVEL 时 defconfig 会丢弃 CONFIG_CCACHE
           CONFIG_DEVEL=y
           CONFIG_CCACHE=y
-          CONFIG_PACKAGE_luci-theme-argon=y
-          CONFIG_PACKAGE_luci-app-argon-config=y
+          # 主题与 iStore/中文包由 vendor.sh 统一注入（默认 luci-theme-vantage）
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-i18n-store-zh-cn=y
+          CONFIG_LUCI_LANG_zh_Hans=y
           # ustream-ssl 默认变体是 mbedtls：若 .config 里 libmbedtls / libustream-mbedtls
           # 都没选中，world 仍会编译 ustream-ssl-mbedtls，cmake 找不到 mbedtls 库
           # 直接 NOTFOUND 失败（mt7622/7623/filogic 均会命中）。这里显式选中。
@@ -355,6 +354,8 @@ jobs:
           # CONFIG_SIGNATURE_CHECK is not set
           CFG
           sed -i 's/^          //' .config
+          # 切主题（argon -> vantage）+ 全量简体中文语言包
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" config .config
           make defconfig
 
           # defconfig 只会选中「Target Profile」choice 里的默认机型；MULTI_PROFILE=y 时
@@ -375,18 +376,19 @@ jobs:
           echo "启用机型: ${n_dev} 个"
           [ "${n_dev}" -gt 0 ] || { echo "::error::没有任何机型被启用，产物会是空"; exit 1; }
 
-          # argon 作为默认主题：99 号 uci-defaults 晚于主题包自带的 30_luci-theme-*，
-          # 启动时强制把 mediaurlbase 指向 argon，避免 bootstrap 抢默认
-          mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-luci-theme-argon <<'SH'
-          #!/bin/sh
-          uci -q set luci.themes.Argon='/luci-static/argon'
-          uci -q set luci.main.mediaurlbase='/luci-static/argon'
-          uci -q commit luci
-          exit 0
-          SH
-          sed -i 's/^          //' files/etc/uci-defaults/99-luci-theme-argon
-          chmod +x files/etc/uci-defaults/99-luci-theme-argon
+          # 主题兜底：99 号 uci-defaults 晚于主题包自带的 30_luci-theme-*，
+          # 启动时强制把 mediaurlbase 指向本主题，避免 bootstrap 抢默认
+          theme=$(cat "$GITHUB_WORKSPACE/.theme")
+          if [ "$theme" = "vantage" ] && ! grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config; then
+            echo "::warning::vantage 主题依赖不满足，回退 argon"
+            rm -rf package/luci-theme-vantage package/luci-app-vantage
+            echo argon > "$GITHUB_WORKSPACE/.theme"
+            bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" collections
+            bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" config .config
+            make defconfig
+            theme=argon
+          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" uci-defaults
 
           echo "===== 校验 ====="
           grep -q "^CONFIG_TARGET_${T}=y" .config || { echo "::error::target $T 未选中"; exit 1; }
@@ -396,12 +398,15 @@ jobs:
           echo "目标: $T ${S:-（无 subtarget）}"
           echo "启用机型: $(grep -c '^CONFIG_TARGET_DEVICE_.*=y' .config) 个"
           grep -q "^CONFIG_CCACHE=y" .config && echo "ccache: 已启用" || echo "::warning::ccache 未启用"
-          grep -q "^CONFIG_PACKAGE_luci-theme-argon=y" .config && echo "主题: argon 已启用" || { echo "::error::argon 主题未启用"; exit 1; }
+          grep -q "^CONFIG_PACKAGE_luci-theme-${theme}=y" .config && echo "主题: ${theme} 已启用" || { echo "::error::${theme} 主题未启用"; exit 1; }
+          grep -q "^CONFIG_PACKAGE_luci-app-store=y" .config || echo "::warning::iStore 市场未选入"
+          n_zh=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          echo "简体中文语言包: ${n_zh:-0} 个"
           grep -q "CONFIG_SIGNED_PACKAGES is not set" .config || { echo "::error::包索引签名未关闭，package/index 会因缺少 usign 宿主工具失败"; exit 1; }
           if grep -q "^CONFIG_PACKAGE_luci-theme-bootstrap=y" .config; then
-            echo "::warning::bootstrap 仍被其他包依赖（argon 仍为默认主题，由 uci-defaults 保证）"
+            echo "::warning::bootstrap 仍被其他包依赖（${theme} 仍为默认主题，由 uci-defaults 保证）"
           else
-            echo "主题: bootstrap 未安装，argon 为唯一主题"
+            echo "主题: bootstrap 未安装，${theme} 为唯一主题"
           fi
 
       - name: 下载源码包

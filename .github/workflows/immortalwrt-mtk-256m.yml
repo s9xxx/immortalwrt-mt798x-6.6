@@ -156,9 +156,9 @@ jobs:
 
       - name: 更新 feeds + iStore 市场
         run: |
-          # iStore 官方源（市场 + 中文语言包）
-          grep -q 'src-git istore' feeds.conf.default \
-            || echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+          # iStore 官方源（市场 + 中文语言包）；theme/store/中文 的统一逻辑在
+          # .github/scripts/vendor.sh，四个 workflow 共用，避免各写一份走偏
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" feed
           for i in 1 2 3; do
             if ./scripts/feeds update -a && ./scripts/feeds install -a; then
               echo ">>> feeds 完成"
@@ -169,35 +169,11 @@ jobs:
             sleep 20
             [ "$i" = "3" ] && exit 1
           done
-          ./scripts/feeds install -d y -p istore luci-app-store || true
-          ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || true
-          test -f feeds/luci/applications/luci-app-store/Makefile \
-            || { echo "::error::iStore 市场包缺失（luci-app-store）"; exit 1; }
-          echo "✔ iStore 市场就绪"
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" store
 
       - name: 准备默认主题（vantage，24.10 支持；不可用则回退 argon）
         run: |
-          THEME=vantage
-          git clone -q --depth 1 "$THEME_REPO" /tmp/vantage-theme || true
-          if [ -d /tmp/vantage-theme/luci-theme-vantage ]; then
-            cp -a /tmp/vantage-theme/luci-theme-vantage package/
-            [ -d /tmp/vantage-theme/luci-app-vantage ] && cp -a /tmp/vantage-theme/luci-app-vantage package/
-          fi
-
-          # 结构校验：24.10 的 LuCI 用 ucode 模板 + htdocs/luci-static/<name>，
-          # 老式 Lua 主题（luasrc/view/*.htm）在 24.10 上跑不起来，直接回退
-          if [ -f package/luci-theme-vantage/Makefile ] \
-             && [ -d package/luci-theme-vantage/htdocs/luci-static/vantage ] \
-             && [ -d package/luci-theme-vantage/ucode/template/themes/vantage ]; then
-            echo "✔ vantage 主题结构符合 24.10（ucode 模板 + luci-static/vantage）"
-            grep -E '^PKG_VERSION|^LUCI_DEPENDS' package/luci-theme-vantage/Makefile || true
-          else
-            echo "::warning::vantage 主题不可用（克隆失败或结构不兼容 24.10），回退 argon"
-            THEME=argon
-            rm -rf package/luci-theme-vantage package/luci-app-vantage
-          fi
-          echo "$THEME" > "$GITHUB_WORKSPACE/.theme"
-          echo ">>> 本次默认主题: $THEME"
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" theme
 
       - name: 扩分区到 256M（DTS ubi + filogic.mk IMAGE_SIZE）
         run: |
@@ -249,9 +225,9 @@ jobs:
       - name: 生成 .config（3 机型 + WiFi + iStore + 中文 + 主题）
         run: |
           set -e
-          theme=$(cat "$GITHUB_WORKSPACE/.theme")
+          V="$GITHUB_WORKSPACE/.github/scripts/vendor.sh"
 
-          gen() {  # $1 = vantage|argon
+          gen() {
             : > .config
             cat >> .config <<'CFG'
           CONFIG_TARGET_mediatek=y
@@ -280,57 +256,22 @@ jobs:
           # CONFIG_SIGNED_PACKAGES is not set
           # CONFIG_SIGNATURE_CHECK is not set
           CFG
-            if [ "$1" = "vantage" ]; then
-              {
-                echo "CONFIG_PACKAGE_luci-theme-vantage=y"
-                echo "CONFIG_PACKAGE_luci-app-vantage=y"
-              } >> .config
-            else
-              {
-                echo "CONFIG_PACKAGE_luci-theme-argon=y"
-                echo "CONFIG_PACKAGE_luci-app-argon-config=y"
-              } >> .config
-            fi
-            # luci / luci-light 集合原本依赖 bootstrap，改成依赖本次要用的主题
-            for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
-              [ -f "$f" ] && sed -i -E "s/luci-theme-(bootstrap|vantage|argon)/luci-theme-$1/g" "$f"
-            done
+            bash "$V" collections   # luci 集合改为依赖本次主题
+            bash "$V" config .config # 切主题 + 全量中文语言包
             make defconfig > /dev/null
           }
 
-          gen "$theme"
+          gen
+          theme=$(cat "$GITHUB_WORKSPACE/.theme")
           if [ "$theme" = "vantage" ] && ! grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config; then
             echo "::warning::vantage 主题在 24.10 下依赖不满足（未被 defconfig 选中），回退 argon"
+            rm -rf package/luci-theme-vantage package/luci-app-vantage
+            echo argon > "$GITHUB_WORKSPACE/.theme"
+            gen
             theme=argon
-            echo "$theme" > "$GITHUB_WORKSPACE/.theme"
-            gen "$theme"
           fi
-
-          # 全量简体中文语言包：把本次构建里存在的 luci-i18n-*-zh-cn 全部显式选入
-          awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print $2"=y"}' tmp/.config-package.in >> .config
-          make defconfig > /dev/null
-
           # 默认主题兜底：99 号 uci-defaults 晚于主题包自带的 30_*，启动时强制指向本主题
-          mkdir -p files/etc/uci-defaults
-          if [ "$theme" = "vantage" ]; then
-            cat > files/etc/uci-defaults/99-luci-theme-vantage <<'SH'
-          #!/bin/sh
-          uci -q set luci.themes.Vantage='/luci-static/vantage'
-          uci -q set luci.main.mediaurlbase='/luci-static/vantage'
-          uci -q commit luci
-          exit 0
-          SH
-            chmod +x files/etc/uci-defaults/99-luci-theme-vantage
-          else
-            cat > files/etc/uci-defaults/99-luci-theme-argon <<'SH'
-          #!/bin/sh
-          uci -q set luci.themes.Argon='/luci-static/argon'
-          uci -q set luci.main.mediaurlbase='/luci-static/argon'
-          uci -q commit luci
-          exit 0
-          SH
-            chmod +x files/etc/uci-defaults/99-luci-theme-argon
-          fi
+          bash "$V" uci-defaults
 
           echo "===== 校验 ====="
           n_dev=$(grep -cE '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || true)

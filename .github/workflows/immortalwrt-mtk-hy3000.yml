@@ -23,8 +23,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # 每周五 05:00 UTC = 北京时间 13:00
-    - cron: '0 5 * * 5'
+    # 每周二、周四 12:00（北京时间）；04:00 UTC = 12:00 UTC+8
+    - cron: '0 4 * * 2,4'
 
 permissions:
   contents: write
@@ -137,8 +137,8 @@ jobs:
 
       - name: 更新 feeds 并注入第三方包
         run: |
-          # iStore 应用商店源（与 mt798x-action 的 diy-part1.sh 一致）
-          echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+          # 主题 / iStore / 中文包的统一逻辑在 .github/scripts/vendor.sh，四个 workflow 共用
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" feed
 
           for i in 1 2 3; do
             if ./scripts/feeds update -a && ./scripts/feeds install -a; then
@@ -151,9 +151,7 @@ jobs:
             [ "$i" = "3" ] && exit 1
           done
 
-          # feeds install -a 不一定装上 istore feed 的包，显式再装一遍
-          ./scripts/feeds install -d y -p istore luci-app-store || true
-          ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || true
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" store
 
           # 第三方包（24-config-general 里引用的 luci-app-adguardhome / luci-app-wolplus）
           # wolplus 原引用 sbwml/openwrt_pkgs 稀疏目录，该目录已从上游仓库移除，
@@ -163,11 +161,9 @@ jobs:
           git clone --depth=1 https://github.com/animegasan/luci-app-wolplus package/luci-app-wolplus
           [ -f package/luci-app-wolplus/Makefile ] || { echo "::error::luci-app-wolplus 克隆失败或布局异常"; exit 1; }
 
-          # 默认主题：luci / luci-light 集合原本依赖 luci-theme-bootstrap，
-          # 改成依赖 argon，保证 argon 可用且为默认
-          for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
-            [ -f "$f" ] && sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' "$f"
-          done
+          # 默认主题换成 luci-theme-vantage（集合依赖一并改掉）
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" theme
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" collections
           echo ">>> feeds 与第三方包注入完成"
 
       - name: 修补 libffi InstallDev（删除失效的 fficonfig.h 硬拷，对齐官方 24.10）
@@ -237,7 +233,7 @@ jobs:
               sys.exit(1)
 
           # 3) 商店与主题
-          for p in ("luci-app-store", "luci-theme-argon"):
+          for p in ("luci-app-store", "luci-theme-vantage", "luci-theme-argon"):
               flag = "CONFIG_PACKAGE_%s=y" % p
               print(("OK   " if flag in cfg else "WARN ") + flag)
           PY
@@ -261,6 +257,8 @@ jobs:
             cat .github/configs/24-config-general >> .config
             echo "CONFIG_PACKAGE_bash=y" >> .config
             echo "CONFIG_CCACHE=y" >> .config
+            # 主题切到 vantage（配置栈里是 argon）+ 全量简体中文语言包
+            bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" config .config
             echo ">>> 已写入配置栈（$(wc -l < .config) 行）"
 
             # 3) defconfig
@@ -317,6 +315,11 @@ jobs:
 
           grep -q '^CONFIG_TARGET_mediatek=y' .config && echo "目标: mediatek/filogic"
           grep -q '^CONFIG_CCACHE=y' .config && echo "ccache: 已启用"
+
+      - name: 写入默认主题 uci-defaults
+        run: |
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" uci-defaults
+          ls -l files/etc/uci-defaults/ || true
 
       - name: 下载源码包
         run: |

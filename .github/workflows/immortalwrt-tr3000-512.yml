@@ -6,7 +6,7 @@
 #   512MB NAND：ubi 分区 0x005c0000 + 0x1FA40000，IMAGE_SIZE 520000k
 #
 # 机制：单 job 只编这一台（CONFIG_TARGET_PROFILE），磁盘清理 + 4G swap + ccache 加速，
-#       默认主题 argon（集合依赖替换 + 99 号 uci-defaults 强制 mediaurlbase）。
+#       默认主题 luci-theme-vantage（集合依赖替换 + 99 号 uci-defaults 强制 mediaurlbase）。
 name: ImmortalWrt TR3000 512MB 编译
 
 on:
@@ -17,8 +17,8 @@ on:
         type: boolean
         default: true
   schedule:
-    # 每周一、周四 07:00（北京时间）
-    - cron: '0 23 * * 0,3'
+    # 每周二、周四 12:00（北京时间）；04:00 UTC = 12:00 UTC+8
+    - cron: '0 4 * * 2,4'
 
 permissions:
   contents: write
@@ -133,8 +133,10 @@ jobs:
             ccache-${{ env.TARGET }}-${{ env.SUB }}-${{ env.DEVICE }}-
             ccache-${{ env.TARGET }}-${{ env.SUB }}-
 
-      - name: 更新并安装 feeds
+      - name: 更新并安装 feeds（含 iStore 市场）
         run: |
+          # 主题 / iStore / 中文包的统一逻辑在 .github/scripts/vendor.sh，四个 workflow 共用
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" feed
           for i in 1 2 3; do
             if ./scripts/feeds update -a && ./scripts/feeds install -a; then
               echo ">>> feeds 完成"
@@ -145,14 +147,9 @@ jobs:
             sleep 20
             [ "$i" = "3" ] && exit 1
           done
-
-          # 默认主题：luci / luci-light 集合原本依赖 luci-theme-bootstrap，
-          # 改成依赖 argon，这样 argon 成为唯一（默认）主题
-          for f in feeds/luci/collections/luci-light/Makefile feeds/luci/collections/luci/Makefile; do
-            [ -f "$f" ] && sed -i 's/luci-theme-bootstrap/luci-theme-argon/g' "$f"
-          done
-          echo "===== 集合默认主题 ====="
-          grep -H "luci-theme-argon" feeds/luci/collections/*/Makefile 2>/dev/null || true
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" store
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" theme
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" collections
 
       - name: 修补 libffi InstallDev（删除失效的 fficonfig.h 硬拷，对齐官方 24.10）
         shell: bash
@@ -189,7 +186,7 @@ jobs:
           echo "---- 修补后的 Build/InstallDev ----"
           sed -n '/define Build\/InstallDev/,/^endef/p' "$f"
 
-      - name: 生成 .config（TR3000 512MB + ccache + argon）
+      - name: 生成 .config（TR3000 512MB + ccache + 主题/iStore/中文）
         run: |
           mkdir -p tmp
           cat > gen_config.py <<'PY'
@@ -223,7 +220,8 @@ jobs:
               print("::error::源码树中不存在这些机型: %s" % " ".join(missing))
               sys.exit(1)
 
-          pkgs = ["luci-theme-argon", "luci-app-argon-config"]
+          # 主题由 .github/scripts/vendor.sh 注入（默认 vantage，回退 argon）
+          pkgs = ["luci-app-store", "luci-i18n-store-zh-cn"]
           lines = ["CONFIG_TARGET_mediatek=y",
                    "CONFIG_TARGET_mediatek_filogic=y",
                    "CONFIG_DEVEL=y",
@@ -254,13 +252,11 @@ jobs:
               mp = [l.strip() for l in cfg.splitlines() if "MULTI_PROFILE" in l]
               print("MULTI_PROFILE 状态: %s" % (mp or "（.config 里没有该符号）"))
               sys.exit(1)
-          for p in ("luci-theme-argon", "luci-app-argon-config"):
+          for p in ("luci-app-store", "luci-theme-vantage", "luci-theme-argon"):
               flag = "CONFIG_PACKAGE_%s=y" % p
               print(("OK   " if flag in cfg else "WARN ") + flag)
           if "CONFIG_PACKAGE_luci-theme-bootstrap=y" in cfg:
-              print("::warning::bootstrap 仍被其他包依赖（argon 仍为默认主题，由 uci-defaults 保证）")
-          else:
-              print("主题: bootstrap 未安装，argon 为唯一主题")
+              print("::warning::bootstrap 仍被其他包依赖（默认主题由 uci-defaults 保证）")
           PY
 
           ok=0
@@ -284,6 +280,9 @@ jobs:
             # 且签名还需要 TOPDIR/key-build 私钥（仓库无此文件）。
             echo "# CONFIG_SIGNED_PACKAGES is not set" >> .config
             echo "# CONFIG_SIGNATURE_CHECK is not set" >> .config
+            # 主题切到 vantage（回退 argon）+ 全量简体中文语言包。必须放在
+            # gen_config.py 之后：那一步是整体重写 .config，之前的注入会被覆盖。
+            bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" config .config
             # 3) defconfig —— kconfig 遇递归依赖时仍会写出 .config 并 exit 0，只能事后复核
             if ! make -j1 defconfig > defconfig.log 2>&1; then
               tail -40 defconfig.log
@@ -310,7 +309,7 @@ jobs:
               changed=0
               for p in $bad; do
                 case "$p" in
-                  luci-theme-argon|luci-app-argon-config)
+                  luci-theme-vantage|luci-theme-argon|luci-app-argon-config|luci-app-vantage)
                     echo "::error::$p 属于必需包，不能自动禁用，请手工修 feed"; echo "::endgroup::"; exit 1 ;;
                 esac
                 while IFS= read -r d; do
@@ -333,17 +332,21 @@ jobs:
           done
           [ "$ok" = "1" ] || { echo "::error::3 次尝试都失败"; exit 1; }
 
-          # argon 作为默认主题：99 号 uci-defaults 晚于主题包自带的 30_luci-theme-*，
-          # 启动时强制把 mediaurlbase 指向 argon，避免 bootstrap 抢默认
-          mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-luci-theme-argon <<'SH'
-          #!/bin/sh
-          uci -q set luci.themes.Argon='/luci-static/argon'
-          uci -q set luci.main.mediaurlbase='/luci-static/argon'
-          uci -q commit luci
-          exit 0
-          SH
-          chmod +x files/etc/uci-defaults/99-luci-theme-argon
+          # 主题兜底：99 号 uci-defaults 晚于主题包自带的 30_luci-theme-*，
+          # 启动时强制把 mediaurlbase 指向本主题，避免 bootstrap 抢默认
+          theme=$(cat "$GITHUB_WORKSPACE/.theme")
+          if [ "$theme" = "vantage" ] && ! grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config; then
+            echo "::warning::vantage 主题依赖不满足，回退 argon"
+            rm -rf package/luci-theme-vantage package/luci-app-vantage
+            echo argon > "$GITHUB_WORKSPACE/.theme"
+            bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" collections
+            bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" config .config
+            make -j1 defconfig > /dev/null 2>&1 || true
+            theme=argon
+          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" uci-defaults
+          n_zh=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
+          echo "默认主题: $theme；简体中文语言包: ${n_zh:-0} 个"
 
           grep -q '^CONFIG_TARGET_mediatek=y' .config && echo "目标: mediatek/filogic"
           grep -q '^CONFIG_CCACHE=y' .config && echo "ccache: 已启用" || echo "::warning::ccache 未启用"
@@ -473,7 +476,7 @@ jobs:
           - 触发方式: ${{ github.event_name }}
           - 设备: cudy_tr3000-512mb-v1（mediatek / filogic）
           - 分区: ubi 0x005c0000 + 0x1FA40000（约 506MB 可用）
-          - 默认主题: argon
+          - 默认主题: luci-theme-vantage（不可用回退 argon）
           - 提交: ${{ github.sha }}
           - 日志: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           - 默认 IP: 192.168.1.1 / 用户名 root / 无密码
