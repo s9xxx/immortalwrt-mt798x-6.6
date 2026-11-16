@@ -33,6 +33,7 @@ on:
     branches: [openwrt-24.10-6.6]
     paths:
       - '.github/workflows/immortalwrt-mtk-256m.yml'
+      - '.github/scripts/**'
       - 'target/linux/mediatek/image/filogic.mk'
       - 'target/linux/mediatek/dts/mt7981b-bt-r320.dts'
       - 'target/linux/mediatek/dts/mt7981b-cmcc-rax3000m-nand-mtk.dts'

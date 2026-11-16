@@ -16,6 +16,12 @@
 name: ImmortalWrt HY3000 编译
 
 on:
+  # 改本流程或 vendor.sh 即自动跑一次（没法用 API 触发 workflow_dispatch）
+  push:
+    branches: [openwrt-24.10-6.6]
+    paths:
+      - '.github/workflows/immortalwrt-mtk-hy3000.yml'
+      - '.github/scripts/**'
   workflow_dispatch:
     inputs:
       make_release:
