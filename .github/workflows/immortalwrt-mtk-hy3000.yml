@@ -416,6 +416,31 @@ jobs:
             ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: 核对镜像内包清单（主题 / iStore / 中文）
+        run: |
+          # 编译成功不等于主题真的进了镜像（kconfig 可能把它丢掉），这里用
+          # 构建产物里的 .manifest 直接核对，结论走 ::error/::warning 注解，
+          # 不登录也能在 API 上读到。
+          theme=$(cat .theme 2>/dev/null || echo argon)
+          mf=$(find bin/targets -maxdepth 3 -name '*.manifest' | head -1)
+          if [ -z "$mf" ]; then
+            echo "::warning::没找到 .manifest，跳过包清单核对"
+            exit 0
+          fi
+          echo "===== $mf 包清单核对（期望主题 $theme）====="
+          grep -E '^luci-theme-' "$mf" || echo "（清单里没有任何 luci-theme-*）"
+          grep -E '^luci-app-(store|vantage)' "$mf" || true
+          n_zh=$(grep -c '^luci-i18n-.*-zh-cn ' "$mf" || true)
+          n_zh=${n_zh:-0}
+          echo "简体中文语言包: $n_zh 个"
+          if grep -q "^luci-theme-$theme " "$mf"; then
+            echo "✔ 默认主题 $theme 已进镜像"
+          else
+            echo "::error::默认主题 $theme 没进镜像（构建成功但被 kconfig 丢了）"
+          fi
+          grep -q '^luci-app-store ' "$mf" && echo "✔ iStore 市场已进镜像" \
+            || echo "::warning::iStore 市场没进镜像"
+          [ "$n_zh" -ge 5 ] || echo "::warning::镜像里中文语言包只有 $n_zh 个（偏少）"
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
