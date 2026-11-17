@@ -1,0 +1,370 @@
+#=====================================================================================
+# Build ImmortalWrt-MT798x-6.6 (s9xxx) for lede/Kwrt 移植机型（mt798x / filogic）
+#=====================================================================================
+# 覆盖 tvliving/lede 有、immortalwrt-mt798x-6.6 原本没有的 27 台 filogic 设备：
+#   mt7981: cetron_ct3003-mod / cmcc_a10-mod / cmcc_rax3000m-emmc / cmcc_rax3000m-nand /
+#           cmcc_xr30-emmc / cudy_tr3000-256mb-v1 / cudy_tr3000-mod / fzs_5gcpe-p3 /
+#           globitel_bt-r320 / huasifei_ws3006 / huasifei_ws3009 / ikuai_q3000 /
+#           tenbay_wr3000k / xiaomi_mi-router-wr30u
+#   mt7986: clx_s20l / hf_m7986r1-emmc / hf_m7986r1-nand / ikuai_q6000 / ikuai_q6000-emmc /
+#           jdcloud_re-cs-05 / xiaomi_redmi-router-ax6000 /
+#           bananapi_bpi-r3-mini-emmc / bananapi_bpi-r3-mini-nand
+#   mt7988: tplink_tl-7dr7299-v1
+#   mt7987: bananapi_bpi-r4-lite / glinet_gl-mt3600be / tenda_be12-pro
+#
+# 固化配置：
+#   - 默认主题 luci-theme-vantage（anothaDev），argon 全部剔除
+#   - iStore 市场（linkease/istore）+ 全量简体中文语言包
+#   - 无线首启：radio 全开 + CN 国码 + HE160 + 802.11k/v/r
+#   - 定时：每周一、周三 北京时间 12:00（UTC 04:00）
+#=====================================================================================
+
+name: 🏗️ ImmortalWrt MT798x 移植机型 (lede ported)
+
+on:
+  schedule:
+    # 周一、周三 北京时间 12:00 = UTC 04:00
+    - cron: '0 4 * * 1,3'
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '是否发布到 Release'
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches: [openwrt-24.10-6.6]
+    paths:
+      - '.github/workflows/immortalwrt-mt798x-other.yml'
+      - 'target/linux/mediatek/image/filogic.mk'
+      - 'target/linux/mediatek/dts/**'
+      - 'target/linux/mediatek/filogic/base-files/**'
+
+env:
+  REPO_URL: https://github.com/s9xxx/immortalwrt-mt798x-6.6
+  REPO_BRANCH: openwrt-24.10-6.6
+  TZ: Asia/Shanghai
+  # 移植机型白名单（与 filogic.mk 末尾「移植自 tvliving/lede」段一一对应）
+  DEVICE_LIST: >-
+    cetron_ct3003-mod cmcc_a10-mod cmcc_rax3000m-emmc cmcc_rax3000m-nand cmcc_xr30-emmc
+    cudy_tr3000-256mb-v1 cudy_tr3000-mod fzs_5gcpe-p3 globitel_bt-r320 huasifei_ws3006
+    huasifei_ws3009 ikuai_q3000 tenbay_wr3000k xiaomi_mi-router-wr30u
+    clx_s20l hf_m7986r1-emmc hf_m7986r1-nand ikuai_q6000 ikuai_q6000-emmc jdcloud_re-cs-05
+    xiaomi_redmi-router-ax6000 bananapi_bpi-r3-mini-emmc bananapi_bpi-r3-mini-nand
+    tplink_tl-7dr7299-v1 bananapi_bpi-r4-lite glinet_gl-mt3600be tenda_be12-pro
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          sudo -E apt-get -y purge azure-cli* ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -hT /
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install build-essential clang cmake cpio curl device-tree-compiler ecj fastjar \
+            flex gawk gettext gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            libelf-dev libglib2.0-dev libgmp-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip \
+            python3-ply python3-docutils python3-pyelftools qemu-utils re2c rsync scons squashfs-tools \
+            subversion swig texinfo unzip vim wget xmlto xxd zlib1g-dev
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-imm-mt798x-ported-${{ github.run_id }}
+          restore-keys: ccache-imm-mt798x-ported-
+
+      - name: 克隆源码
+        run: |
+          git clone --depth 1 ${REPO_URL} -b ${REPO_BRANCH} imm
+          cd imm
+          git log -1 --format="commit: %H  date: %ci"
+          # 确认 27 台设备都在 filogic.mk 里（漏了就早失败，别等到编译）
+          miss=""
+          for d in $DEVICE_LIST; do
+            grep -q "^define Device/${d}$" target/linux/mediatek/image/filogic.mk || miss="$miss $d"
+          done
+          if [ -n "$miss" ]; then
+            echo "::error::filogic.mk 缺少设备定义:$miss"
+            exit 1
+          fi
+          echo "✔ 27 台设备定义齐备"
+
+      - name: 更新 feeds
+        working-directory: imm
+        run: |
+          # iStore 源（linkease 官方，支持 apk/opkg 双包管理）
+          grep -q 'src-git.*istore' feeds.conf.default \
+            || echo 'src-git-full istore https://github.com/linkease/istore.git' >> feeds.conf.default
+          ok=0
+          for i in 1 2 3; do
+            if ./scripts/feeds update -a; then ok=1; break; fi
+            echo "::warning::feeds update 第 $i 次失败，10 秒后重试"; sleep 10
+          done
+          [ "$ok" = "1" ] || { echo "::error::feeds update 连续 3 次失败"; exit 1; }
+          ./scripts/feeds install -a
+          ./scripts/feeds install -d y -p istore luci-app-store || true
+
+      - name: 默认主题 vantage（剔除 argon）
+        working-directory: imm
+        run: |
+          git clone -q --depth 1 https://github.com/anothaDev/luci-theme-vantage.git /tmp/vantage
+          cp -a /tmp/vantage/luci-theme-vantage package/
+          # 主题仓库自带仪表盘插件时一并带入
+          [ -d /tmp/vantage/luci-app-vantage ] && cp -a /tmp/vantage/luci-app-vantage package/ || true
+          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
+          # argon 全部剔除（feeds 里可能有，树内也不允许残留）
+          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config \
+                 package/luci-theme-argon package/luci-app-argon-config
+          echo "✔ vantage 就绪，argon 已剔除"
+
+      - name: 生成 .config（27 设备白名单）
+        working-directory: imm
+        run: |
+          {
+            echo "CONFIG_TARGET_mediatek=y"
+            echo "CONFIG_TARGET_mediatek_filogic=y"
+            echo "CONFIG_TARGET_MULTI_PROFILE=y"
+            echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"
+            for d in $DEVICE_LIST; do
+              echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${d}=y"
+            done
+            echo "CONFIG_PACKAGE_luci=y"
+            echo "CONFIG_PACKAGE_luci-compat=y"
+            # 语言开关：luci.mk 里 luci-i18n-*-zh-cn 的 DEFAULT:=LUCI_LANG_zh_Hans，
+            # 不设这个开关，全量枚举出来的 zh-cn =y 会被 kconfig 压回 n
+            echo "CONFIG_LUCI_LANG_zh_Hans=y"
+            echo "CONFIG_LUCI_LANG_en=y"
+            echo "CONFIG_PACKAGE_luci-theme-vantage=y"
+            echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
+            echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
+            # iStore：kconfig 只要 >=m，真正装进固件靠 DEVICE_PACKAGES 注入
+            echo "CONFIG_PACKAGE_luci-app-store=m"
+            echo "CONFIG_PACKAGE_luci-lib-taskd=m"
+            echo "CONFIG_PACKAGE_luci-lib-xterm=m"
+            echo "CONFIG_PACKAGE_taskd=m"
+            echo "CONFIG_PACKAGE_libuci-lua=m"
+            echo "CONFIG_PACKAGE_mount-utils=m"
+            echo "CONFIG_PACKAGE_curl=y"
+            echo "CONFIG_PACKAGE_tar=y"
+            # 关键：luci-app-store 的 kconfig 依赖是
+            #   depends on !(PACKAGE_TAR_XZ) || PACKAGE_xz-utils
+            # 选了 TAR_XZ（tar 带 xz）就必须同时选 xz-utils，否则 store 会被静默压成 n
+            echo "CONFIG_PACKAGE_xz-utils=y"
+          } > .config
+          make defconfig
+
+          # MULTI_PROFILE 下 defconfig 会展开 filogic 全部机型，把白名单外的整行删掉再写 n
+          python3 - <<'PYEOF'
+          import os
+          keep = set()
+          for d in os.environ['DEVICE_LIST'].split():
+              keep.add('CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_%s' % d)
+          lines, off = [], 0
+          for line in open('.config'):
+              name = line.split('=')[0].replace('# ', '').split(' ')[0]
+              if name.startswith('CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_') and name not in keep:
+                  lines.append('# %s is not set\n' % name); off += 1
+              else:
+                  lines.append(line)
+          open('.config', 'w').writelines(lines)
+          print('已关闭白名单外机型: %d 个' % off)
+          PYEOF
+          make defconfig
+
+          n_on=$(grep -c '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config)
+          want=$(echo $DEVICE_LIST | wc -w)
+          echo ">>> 已选设备 $n_on / 期望 $want"
+          [ "$n_on" = "$want" ] || { grep '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_' .config | grep '=y$'; echo "::error::设备数 $n_on != $want"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config || { echo "::error::vantage 主题未选中"; exit 1; }
+          grep -qE '^CONFIG_PACKAGE_luci-app-store=[ym]$' .config || { echo "::error::iStore(luci-app-store) 未选中"; exit 1; }
+
+          # 全量简体中文语言包（.config-package.in 的 config 行带 tab 前缀，不能用 ^config）
+          awk '/^[[:space:]]*config PACKAGE_luci-i18n-.+-zh-cn$/{print "CONFIG_"$2"=y"}' tmp/.config-package.in >> .config
+          make defconfig
+          zh=$(grep -c '^CONFIG_PACKAGE_luci-i18n-.*-zh-cn=y$' .config || true)
+          echo ">>> zh-cn 语言包: $zh 个"
+          [ "${zh:-0}" -ge 5 ] || { echo "::error::中文语言包过少（$zh）"; exit 1; }
+
+      - name: iStore 注入到 27 台设备的 DEVICE_PACKAGES
+        working-directory: imm
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, sys
+          devs = os.environ['DEVICE_LIST'].split()
+          extra = ['luci-app-store']
+          if os.path.exists('package/luci-app-vantage/Makefile'):
+              extra.append('luci-app-vantage')
+          add = '  DEVICE_PACKAGES += %s\n' % ' '.join(extra)
+          path = 'target/linux/mediatek/image/filogic.mk'
+          s = open(path, encoding='utf-8').read()
+          miss = []
+          for d in devs:
+              m = re.search(r'(define Device/%s\n.*?)(endef)' % re.escape(d), s, re.S)
+              if not m:
+                  miss.append(d); continue
+              if 'luci-app-store' in m.group(1):
+                  continue
+              # 统一插在 endef 前，避免改动可能带反斜杠续行的 DEVICE_PACKAGES 行
+              s = s[:m.end(1)] + add + s[m.end(1):]
+          open(path, 'w', encoding='utf-8', newline='\n').write(s)
+          if miss:
+              print('::error::找不到这些设备块: %s' % ' '.join(miss)); sys.exit(1)
+          print('✔ 已注入 %s 到 %d 台设备' % (' '.join(extra), len(devs)))
+          PYEOF
+
+      - name: dts 预检（提前发现 6.6 不兼容的 dts）
+        working-directory: imm
+        run: |
+          # 只为拿到解包好的内核 dtsi/头文件；不会开始编译
+          make -j$(nproc) target/linux/prepare > /tmp/prep.log 2>&1 || { tail -40 /tmp/prep.log; exit 1; }
+          KDIR=$(ls -d build_dir/target-*/linux-mediatek_filogic/linux-6.* | head -1)
+          echo ">>> 内核源码: $KDIR"
+          INC="-nostdinc -x assembler-with-cpp -I$KDIR/arch/arm64/boot/dts/mediatek -I$KDIR/include -I$KDIR/scripts/dtc/include-prefixes -undef -D__DTS__"
+          fail=""
+          for d in $DEVICE_LIST; do
+            dts=$(awk "/^define Device\/${d}\$/,/^endef/" target/linux/mediatek/image/filogic.mk | sed -nE 's/^\s*DEVICE_DTS\s*:?=\s*(\S+).*/\1/p' | head -1)
+            [ -n "$dts" ] || { echo "::warning::$d 没有 DEVICE_DTS"; continue; }
+            src="target/linux/mediatek/dts/${dts}.dts"
+            [ -f "$src" ] || src="$KDIR/arch/arm64/boot/dts/mediatek/${dts}.dts"
+            if ! cpp $INC -o /tmp/chk.dts "$src" 2>/tmp/chk.err; then
+              echo "::error::$d ($dts) cpp 失败"; tail -5 /tmp/chk.err; fail="$fail $d"; continue
+            fi
+            if ! dtc -I dts -O dtb -o /dev/null /tmp/chk.dts 2>/tmp/chk.err; then
+              echo "::error::$d ($dts) dtc 失败"; head -8 /tmp/chk.err; fail="$fail $d"
+            fi
+          done
+          if [ -n "$fail" ]; then
+            {
+              echo "### dts 预检未通过"
+              for d in $fail; do echo "- $d"; done
+            } >> $GITHUB_STEP_SUMMARY
+            echo "::error::以下机型 dts 在 6.6 上编不过:$fail"
+            exit 1
+          fi
+          echo "✔ 27 台 dts 预检全部通过"
+
+      - name: 注入无线首启配置（uci-defaults）
+        working-directory: imm
+        run: |
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/99-wifi-cn <<'SH'
+          #!/bin/sh
+          [ -f /etc/config/wireless ] || exit 0
+          uci -q set wireless.radio0.disabled='0'
+          uci -q set wireless.radio1.disabled='0'
+          uci -q set wireless.radio0.country='CN'
+          uci -q set wireless.radio1.country='CN'
+          uci -q set wireless.radio0.htmode='HE160' 2>/dev/null
+          uci -q set wireless.radio1.htmode='HE160' 2>/dev/null
+          uci -q set wireless.@wifi-iface[0].ieee80211k='1'
+          uci -q set wireless.@wifi-iface[0].ieee80211v='1'
+          uci -q set wireless.@wifi-iface[0].ieee80211r='1'
+          uci -q commit wireless
+          exit 0
+          SH
+          chmod +x files/etc/uci-defaults/99-wifi-cn
+          cat > files/etc/uci-defaults/98-theme-vantage <<'SH'
+          #!/bin/sh
+          uci -q set luci.main.mediaurlbase='/luci-static/vantage'
+          uci -q set luci.themes.Vantage='/luci-static/vantage'
+          uci -q commit luci
+          exit 0
+          SH
+          chmod +x files/etc/uci-defaults/98-theme-vantage
+          echo "✔ uci-defaults 就绪"
+
+      - name: 预下载软件包
+        working-directory: imm
+        run: |
+          make download -j$(nproc) || make download -j1 V=s
+          find dl -size -1024c -exec rm -f {} \; || true
+
+      - name: 编译
+        working-directory: imm
+        run: |
+          make -j$(nproc) || {
+            echo "::warning::并行编译失败，改用单线程重跑定位"
+            make -j1 V=s
+          }
+
+      - name: 校验并收集产物
+        working-directory: imm
+        run: |
+          mkdir -p ../out
+          find bin/targets/mediatek/filogic -maxdepth 1 -type f \
+            \( -name '*sysupgrade*' -o -name '*factory*' -o -name '*recovery*' \) \
+            ! -name '*.json' -exec cp {} ../out/ \;
+          ls -lh ../out | head -40
+          n=$(ls ../out | wc -l)
+          [ "$n" -gt 0 ] || { echo "::error::没有产出任何固件"; exit 1; }
+          # 逐机型核对：白名单里的每台至少要有一个固件
+          missing=""
+          for d in $DEVICE_LIST; do
+            ls ../out | grep -q "$d" || missing="$missing $d"
+          done
+          [ -z "$missing" ] || { echo "::error::这些机型没有固件:$missing"; exit 1; }
+          echo "✔ 共 $n 个固件，27 台机型齐全"
+
+      - name: 核对镜像内包清单
+        working-directory: imm
+        run: |
+          echo "===== 抽查 manifest（vantage / iStore / 中文）====="
+          for m in $(ls bin/targets/mediatek/filogic/*.manifest | head -3); do
+            echo "--- $m"
+            grep -E 'luci-theme-vantage|luci-app-store|luci-app-vantage|luci-i18n-base-zh-cn' "$m" || echo "  (缺)"
+          done
+
+      - name: 发布 Release
+        if: github.event_name != 'workflow_dispatch' || inputs.make_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="ImmortalWrt-MT798x-Ported-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+          echo ">>> 发布 $TAG"
+          {
+            echo "### ImmortalWrt MT798x 移植机型（lede ported）"
+            echo "- 源码：[s9xxx/immortalwrt-mt798x-6.6](${REPO_URL}/tree/${REPO_BRANCH})"
+            echo "- 内核：6.6 / 目标：mediatek filogic"
+            echo "- 默认主题：luci-theme-vantage（argon 已剔除）"
+            echo "- 含 iStore 软件中心 + 简体中文语言包"
+            echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
+            echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
+            echo
+            echo "### 机型"
+            for d in $DEVICE_LIST; do echo "- $d"; done
+          } > notes.md
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" ../out/* --title "$TAG" --notes-file notes.md
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-imm-mt798x-ported
+          path: |
+            imm/*.log
+            imm/.config
+          retention-days: 7
+          if-no-files-found: warn
+          include-hidden-files: true

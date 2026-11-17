@@ -8,6 +8,57 @@ mediatek_setup_interfaces()
 	local board="$1"
 
 	case $board in
+	# ---- 移植自 tvliving/lede 的 MT798x 机型（起始处匹配，优先于下面的通配分支）----
+	cetron,ct3003-mod|\
+	cmcc,a10-mod|\
+	fzs,5gcpe-p3|\
+	globitel,bt-r320|\
+	tenbay,wr3000k)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" wan
+		;;
+	clx,s20l|\
+	huasifei,ws3009|\
+	jdcloud,re-cs-05)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" eth1
+		;;
+	huasifei,ws3006)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 eth1" wan
+		;;
+	hf,m7986r1-emmc|\
+	hf,m7986r1-nand)
+		ucidef_set_interfaces_lan_wan "lan2 lan3 lan4" "lan1 usb0"
+		;;
+	ikuai,q3000)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" wan
+		;;
+	ikuai,q6000|\
+	ikuai,q6000-emmc)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" eth1
+		;;
+	cudy,tr3000-mod|\
+	cudy,tr3000-256mb-v1)
+		ucidef_set_interfaces_lan_wan eth1 eth0
+		;;
+	xiaomi,mi-router-wr30u|\
+	xiaomi,redmi-router-ax6000)
+		ucidef_set_interfaces_lan_wan "lan2 lan3 lan4" wan
+		;;
+	bananapi,bpi-r3-mini-emmc|\
+	bananapi,bpi-r3-mini-nand)
+		ucidef_set_interfaces_lan_wan eth0 eth1
+		;;
+	bananapi,bpi-r4-lite)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 sfp" eth1
+		;;
+	glinet,gl-mt3600be)
+		ucidef_set_interfaces_lan_wan eth1 eth0
+		;;
+	tenda,be12-pro)
+		ucidef_set_interfaces_lan_wan "lan3 lan4 lan5 eth1" eth2
+		;;
+	tplink,tl-7dr7299-v1)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 sfp" eth1
+		;;
 	abt,asr3000|\
 	cmcc,rax3000m*|\
 	cmcc,rax3000me|\

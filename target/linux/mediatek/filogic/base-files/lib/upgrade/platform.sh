@@ -143,6 +143,13 @@ platform_do_upgrade() {
 	huasifei,wh3000-pro|\
 	umi,uax3000e|\
  	jdcloud,re-cp-03|\
+	cmcc,rax3000m-emmc|\
+	cmcc,xr30-emmc|\
+	clx,s20l|\
+	hf,m7986r1-emmc|\
+	jdcloud,re-cs-05|\
+	globitel,bt-r320|\
+	ikuai,q6000-emmc|\
 	smartrg,sdg-8734)
 		CI_KERNPART="kernel"
 		CI_ROOTPART="rootfs"
@@ -206,6 +213,12 @@ platform_do_upgrade() {
 	xiaomi,redmi-router-ax6000-stock)
 		CI_KERN_UBIPART=ubi_kernel
 		CI_ROOT_UBIPART=ubi
+		nand_do_upgrade "$1"
+		;;
+	tplink,tl-7dr7299-v1)
+		[ -e /dev/fit0 ] && fitblk /dev/fit0
+		[ -e /dev/fitrw ] && fitblk /dev/fitrw
+		CI_KERNPART="fit"
 		nand_do_upgrade "$1"
 		;;
 	*)
@@ -286,6 +299,13 @@ platform_copy_config() {
 	supergateway,s20*|\
 	huasifei,wh3000-pro|\
 	umi,uax3000e|\
+	cmcc,rax3000m-emmc|\
+	cmcc,xr30-emmc|\
+	clx,s20l|\
+	hf,m7986r1-emmc|\
+	jdcloud,re-cs-05|\
+	globitel,bt-r320|\
+	ikuai,q6000-emmc|\
 	ubnt,unifi-6-plus)
 		emmc_copy_config
 		;;
