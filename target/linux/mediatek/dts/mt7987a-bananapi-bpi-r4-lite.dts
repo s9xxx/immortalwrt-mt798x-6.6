@@ -327,9 +327,9 @@
 	status = "okay";
 };
 
+/* mt7987 SDK 侧 pinctrl 未定义 uart0_pins（console 引脚由 preloader/uboot 设置），
+ * mainline 的 pinctrl-0 = <&uart0_pins> 在 6.6 上无法解析，去掉 */
 &uart0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&uart0_pins>;
 	status = "okay";
 };
 

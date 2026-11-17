@@ -242,18 +242,32 @@ jobs:
           echo ">>> 内核源码: $KDIR"
           INC="-nostdinc -x assembler-with-cpp -I$KDIR/arch/arm64/boot/dts/mediatek -I$KDIR/include -I$KDIR/scripts/dtc/include-prefixes -undef -D__DTS__"
           fail=""
-          for d in $DEVICE_LIST; do
-            dts=$(awk "/^define Device\/${d}\$/,/^endef/" target/linux/mediatek/image/filogic.mk | sed -nE 's/^\s*DEVICE_DTS\s*:?=\s*(\S+).*/\1/p' | head -1)
-            [ -n "$dts" ] || { echo "::warning::$d 没有 DEVICE_DTS"; continue; }
+          # 注意：image 阶段会给 filogic.mk 里**全部**设备编译 dtb（含白名单外的），
+          # 白名单外的 dts 炸了照样整个 job 挂，所以这里必须把 dts/ 下的移植 dts 全查一遍
+          python3 - > /tmp/dts_list <<'PYEOF'
+          import re
+          s = open('target/linux/mediatek/image/filogic.mk', encoding='utf-8').read()
+          seen = []
+          for m in re.finditer(r'define Device/(\S+)\n(.*?)endef', s, re.S):
+              m2 = re.search(r'DEVICE_DTS\s*:?=\s*(\S+)', m.group(2))
+              if m2 and m2.group(1) not in seen:
+                  seen.append(m2.group(1))
+          print('\n'.join(seen))
+          PYEOF
+          checked=0
+          while read -r dts; do
+            [ -n "$dts" ] || continue
             src="target/linux/mediatek/dts/${dts}.dts"
-            [ -f "$src" ] || src="$KDIR/arch/arm64/boot/dts/mediatek/${dts}.dts"
+            [ -f "$src" ] || continue
+            checked=$((checked+1))
             if ! cpp $INC -o /tmp/chk.dts "$src" 2>/tmp/chk.err; then
-              echo "::error::$d ($dts) cpp 失败"; tail -5 /tmp/chk.err; fail="$fail $d"; continue
+              echo "::error::$dts cpp 失败"; tail -5 /tmp/chk.err; fail="$fail $dts"; continue
             fi
             if ! dtc -I dts -O dtb -o /dev/null /tmp/chk.dts 2>/tmp/chk.err; then
-              echo "::error::$d ($dts) dtc 失败"; head -8 /tmp/chk.err; fail="$fail $d"
+              echo "::error::$dts dtc 失败"; head -8 /tmp/chk.err; fail="$fail $dts"
             fi
-          done
+          done < /tmp/dts_list
+          echo ">>> 已预检 $checked 个移植 dts（白名单 $(echo $DEVICE_LIST | wc -w) 台 + 白名单外会一起编的）"
           if [ -n "$fail" ]; then
             {
               echo "### dts 预检未通过"
