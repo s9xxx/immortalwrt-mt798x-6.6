@@ -599,4 +599,3 @@
 	status = "okay";
 };
 
-#include "mt7988-gmac-shim.dtsi"

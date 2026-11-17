@@ -333,4 +333,3 @@
 	status = "okay";
 };
 
-#include "mt7987-gmac-shim.dtsi"
