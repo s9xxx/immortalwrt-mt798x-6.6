@@ -455,20 +455,6 @@
 		};
 	};
 
-	i2c0_pins: i2c0-g0-pins {
-		mux {
-			function = "i2c";
-			groups = "i2c0_1";
-		};
-	};
-
-	i2c1_pins: i2c1-g0-pins {
-		mux {
-			function = "i2c";
-			groups = "i2c1_0";
-		};
-	};
-
 	mdio0_pins: mdio0-pins {
 		mux {
 			function = "eth";
