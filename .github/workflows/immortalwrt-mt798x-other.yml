@@ -272,10 +272,14 @@ jobs:
           checked=0
           while read -r ext base name; do
             [ -n "$name" ] || continue
-            if [ "$base" = "dts" ]; then dir="target/linux/mediatek/dts"; else dir="$KDIR/arch/arm64/boot/dts/mediatek"; fi
-            src="$dir/$name.$ext"
-            if [ ! -f "$src" ]; then
-              echo "::error::找不到源文件 $src（$base/$name.$ext）"; fail="$fail $name.$ext"; continue
+            # DTS_DIR 在这棵树里本身就指向 target/linux/mediatek/dts，
+            # 所以不靠 DEVICE_DTS_DIR 猜，两个目录都试一遍
+            src=""
+            for c in "target/linux/mediatek/dts/$name.$ext" "$KDIR/arch/arm64/boot/dts/mediatek/$name.$ext"; do
+              [ -f "$c" ] && { src="$c"; break; }
+            done
+            if [ -z "$src" ]; then
+              echo "::error::找不到源文件 $name.$ext（$base，dts/ 与内核树都没有）"; fail="$fail $name.$ext"; continue
             fi
             checked=$((checked+1))
             if ! cpp $INC -o /tmp/chk.out "$src" 2>/tmp/chk.err; then
