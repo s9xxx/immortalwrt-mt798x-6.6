@@ -3252,9 +3252,10 @@ define Device/bananapi_bpi-r4-lite
   DEVICE_VENDOR := Bananapi
   DEVICE_MODEL := BPi-R4 Lite
   DEVICE_DTS := mt7987a-bananapi-bpi-r4-lite
+  # 只保留能独立编译的 overlay（plugin 不能引用 base dts 的 &pio/&reg_3p3v 等标签，
+  # lede 那套 image.mk 不编 dtbo 所以没暴露；emmc/sd 两个 overlay 因此去掉）
   DEVICE_DTS_OVERLAY:= mt7987a-bananapi-bpi-r4-lite-1pcie-2L \
 		       mt7987a-bananapi-bpi-r4-lite-2pcie-1L \
-		       mt7987a-bananapi-bpi-r4-lite-emmc mt7987a-bananapi-bpi-r4-lite-sd \
 		       mt7987a-bananapi-bpi-r4-lite-nand mt7987a-bananapi-bpi-r4-lite-nor
   DEVICE_DTS_CONFIG := config-mt7987a-bananapi-bpi-r4-lite
   DEVICE_DTC_FLAGS := --pad 4096

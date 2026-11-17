@@ -242,32 +242,50 @@ jobs:
           echo ">>> 内核源码: $KDIR"
           INC="-nostdinc -x assembler-with-cpp -I$KDIR/arch/arm64/boot/dts/mediatek -I$KDIR/include -I$KDIR/scripts/dtc/include-prefixes -undef -D__DTS__"
           fail=""
-          # 注意：image 阶段会给 filogic.mk 里**全部**设备编译 dtb（含白名单外的），
-          # 白名单外的 dts 炸了照样整个 job 挂，所以这里必须把 dts/ 下的移植 dts 全查一遍
+          # image 阶段会给 filogic.mk 里**全部**设备编译 dtb，还会给 DEVICE_DTS_OVERLAY
+          # 里的每个 overlay 编 dtbo（白名单外也编），所以 dts 和 dtso 都必须预检。
           python3 - > /tmp/dts_list <<'PYEOF'
           import re
           s = open('target/linux/mediatek/image/filogic.mk', encoding='utf-8').read()
-          seen = []
+          out, seen = [], set()
+
+          def emit(ext, base, name):
+              k = (ext, base, name)
+              if k not in seen:
+                  seen.add(k)
+                  out.append('%s %s %s' % k)
+
           for m in re.finditer(r'define Device/(\S+)\n(.*?)endef', s, re.S):
-              m2 = re.search(r'DEVICE_DTS\s*:?=\s*(\S+)', m.group(2))
-              if m2 and m2.group(1) not in seen:
-                  seen.append(m2.group(1))
-          print('\n'.join(seen))
+              body = m.group(2)
+              d = re.search(r'DEVICE_DTS_DIR\s*:?=\s*(\S+)', body)
+              # ../dts 表示 dts 源在 target/linux/mediatek/dts，否则在内核树
+              base = 'dts' if (d and 'dts' in d.group(1) and d.group(1) != '$(DTS_DIR)') else 'kdt'
+              m2 = re.search(r'DEVICE_DTS\s*:?=\s*(\S+)', body)
+              if m2:
+                  emit('dts', base, m2.group(1))
+              m3 = re.search(r'DEVICE_DTS_OVERLAY\s*:?=\s*((?:[^\n]*\\\n)*[^\n]*)', body)
+              if m3:
+                  for name in m3.group(1).replace('\\', ' ').split():
+                      emit('dtso', base, name)
+          print('\n'.join(out))
           PYEOF
           checked=0
-          while read -r dts; do
-            [ -n "$dts" ] || continue
-            src="target/linux/mediatek/dts/${dts}.dts"
-            [ -f "$src" ] || continue
-            checked=$((checked+1))
-            if ! cpp $INC -o /tmp/chk.dts "$src" 2>/tmp/chk.err; then
-              echo "::error::$dts cpp 失败"; tail -5 /tmp/chk.err; fail="$fail $dts"; continue
+          while read -r ext base name; do
+            [ -n "$name" ] || continue
+            if [ "$base" = "dts" ]; then dir="target/linux/mediatek/dts"; else dir="$KDIR/arch/arm64/boot/dts/mediatek"; fi
+            src="$dir/$name.$ext"
+            if [ ! -f "$src" ]; then
+              echo "::error::找不到源文件 $src（$base/$name.$ext）"; fail="$fail $name.$ext"; continue
             fi
-            if ! dtc -I dts -O dtb -o /dev/null /tmp/chk.dts 2>/tmp/chk.err; then
-              echo "::error::$dts dtc 失败"; head -8 /tmp/chk.err; fail="$fail $dts"
+            checked=$((checked+1))
+            if ! cpp $INC -o /tmp/chk.out "$src" 2>/tmp/chk.err; then
+              echo "::error::$name.$ext cpp 失败"; tail -5 /tmp/chk.err; fail="$fail $name.$ext"; continue
+            fi
+            if ! dtc -I dts -O dtb -o /dev/null /tmp/chk.out 2>/tmp/chk.err; then
+              echo "::error::$name.$ext dtc 失败"; head -8 /tmp/chk.err; fail="$fail $name.$ext"
             fi
           done < /tmp/dts_list
-          echo ">>> 已预检 $checked 个移植 dts（白名单 $(echo $DEVICE_LIST | wc -w) 台 + 白名单外会一起编的）"
+          echo ">>> 已预检 $checked 个 dts/dtso（白名单 $(echo $DEVICE_LIST | wc -w) 台 + 白名单外会一起编的）"
           if [ -n "$fail" ]; then
             {
               echo "### dts 预检未通过"
