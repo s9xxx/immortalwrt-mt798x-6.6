@@ -391,13 +391,14 @@ jobs:
             echo "### 机型"
             for d in $DEVICE_LIST; do echo "- $d"; done
           } > notes.md
-          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
-          # 本步骤没有 working-directory，跑在仓库根目录；产物在 ./out（收集步骤 wd=imm，写到 ../out）
+          gh release delete "$TAG" --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          # 本步骤没有 working-directory（checkout 在 imm/，仓库根不是 git 仓库），
+          # gh 必须用 -R 指定仓库，否则报 not a git repository；产物在 ./out
           shopt -s nullglob
           files=(out/*)
           [ ${#files[@]} -gt 0 ] || { echo "::error::out/ 为空，无法发布"; ls -la; exit 1; }
           echo ">>> 待发布 ${#files[@]} 个文件"
-          gh release create "$TAG" "${files[@]}" --title "$TAG" --notes-file notes.md
+          gh release create "$TAG" "${files[@]}" -R "$GITHUB_REPOSITORY" --title "$TAG" --notes-file notes.md
 
       - name: 上传编译日志（失败时）
         if: failure()
