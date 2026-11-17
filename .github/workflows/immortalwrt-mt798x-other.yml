@@ -375,6 +375,9 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.make_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 这个 job 没有 checkout，cwd 不是 git 仓库，必须显式指定仓库，
+          # 否则 gh 报 “fatal: not a git repository”（编译其实是成功的，只挂发布）
+          GH_REPO: ${{ github.repository }}
         run: |
           set -e
           TAG="ImmortalWrt-MT798x-Ported-$(TZ=Asia/Shanghai date +%Y-%m-%d)"
@@ -391,9 +394,8 @@ jobs:
             echo "### 机型"
             for d in $DEVICE_LIST; do echo "- $d"; done
           } > notes.md
-          gh release delete "$TAG" --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
-          # 本步骤没有 working-directory（checkout 在 imm/，仓库根不是 git 仓库），
-          # gh 必须用 -R 指定仓库，否则报 not a git repository；产物在 ./out
+          gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          # 本步骤没有 working-directory，跑在仓库根目录；产物在 ./out（收集步骤 wd=imm，写到 ../out）
           shopt -s nullglob
           files=(out/*)
           [ ${#files[@]} -gt 0 ] || { echo "::error::out/ 为空，无法发布"; ls -la; exit 1; }
