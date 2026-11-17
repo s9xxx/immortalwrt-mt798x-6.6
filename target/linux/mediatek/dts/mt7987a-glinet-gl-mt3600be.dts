@@ -106,7 +106,7 @@
 	status = "okay";
 };
 
-&mdio_bus {
+&mdio {
 	reset-delay-us = <10000>;
 	reset-gpios = <&pio 0 GPIO_ACTIVE_LOW>;
 

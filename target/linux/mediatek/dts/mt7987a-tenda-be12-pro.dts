@@ -166,7 +166,7 @@
 	nvmem-cell-names = "mac-address";
 };
 
-&mdio_bus {
+&mdio {
 	phy11: phy@11 {
 		compatible = "ethernet-phy-ieee802.3-c45";
 		reg = <11>;

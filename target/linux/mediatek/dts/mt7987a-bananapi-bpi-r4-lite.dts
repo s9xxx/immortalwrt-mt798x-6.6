@@ -202,7 +202,7 @@
 	};
 };
 
-&mdio_bus {
+&mdio {
 	/* built-in 2.5G Ethernet PHY */
 	phy15: phy@15 {
 		compatible = "ethernet-phy-ieee802.3-c45";

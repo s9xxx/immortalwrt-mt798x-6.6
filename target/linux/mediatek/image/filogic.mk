@@ -30,6 +30,22 @@ define Build/mt7988-bl31-uboot
 	cat $(STAGING_DIR_IMAGE)/mt7988_$1-u-boot.fip >> $@
 endef
 
+# 移植自 lede：mt7987（BPI-R4 Lite / GL-MT3600BE）与 Tenda 双镜像头
+define Build/mt7987-bl2
+	cat $(STAGING_DIR_IMAGE)/mt7987-$1-bl2.img >> $@
+endef
+
+define Build/mt7987-bl31-uboot
+	cat $(STAGING_DIR_IMAGE)/mt7987_$1-u-boot.fip >> $@
+endef
+
+define Build/tenda-mkdualimageheader
+	printf '%b' "\x47\x6f\x64\x31\x00\x00\x00\x00" >"$@.new"
+	gzip -c "$@" | tail -c8 >>"$@.new"
+	cat "$@" >>"$@.new"
+	mv "$@.new" "$@"
+endef
+
 define Build/mt798x-gpt
 	cp $@ $@.tmp 2>/dev/null || true
 	ptgen -g -o $@.tmp -a 1 -l 1024 \

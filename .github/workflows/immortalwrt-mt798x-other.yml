@@ -1,7 +1,7 @@
 #=====================================================================================
 # Build ImmortalWrt-MT798x-6.6 (s9xxx) for lede/Kwrt 移植机型（mt798x / filogic）
 #=====================================================================================
-# 覆盖 tvliving/lede 有、immortalwrt-mt798x-6.6 原本没有的 27 台 filogic 设备：
+# 覆盖 tvliving/lede 有、immortalwrt-mt798x-6.6 原本没有的 filogic 设备（本 workflow 先编 23 台，
 #   mt7981: cetron_ct3003-mod / cmcc_a10-mod / cmcc_rax3000m-emmc / cmcc_rax3000m-nand /
 #           cmcc_xr30-emmc / cudy_tr3000-256mb-v1 / cudy_tr3000-mod / fzs_5gcpe-p3 /
 #           globitel_bt-r320 / huasifei_ws3006 / huasifei_ws3009 / ikuai_q3000 /
@@ -9,8 +9,8 @@
 #   mt7986: clx_s20l / hf_m7986r1-emmc / hf_m7986r1-nand / ikuai_q6000 / ikuai_q6000-emmc /
 #           jdcloud_re-cs-05 / xiaomi_redmi-router-ax6000 /
 #           bananapi_bpi-r3-mini-emmc / bananapi_bpi-r3-mini-nand
-#   mt7988: tplink_tl-7dr7299-v1
-#   mt7987: bananapi_bpi-r4-lite / glinet_gl-mt3600be / tenda_be12-pro
+#   待 uboot 支持（暂不参与编译，定义已在 filogic.mk 里）：
+#     mt7988: tplink_tl-7dr7299-v1 / mt7987: bananapi_bpi-r4-lite、glinet_gl-mt3600be、tenda_be12-pro
 #
 # 固化配置：
 #   - 默认主题 luci-theme-vantage（anothaDev），argon 全部剔除
@@ -45,13 +45,14 @@ env:
   REPO_BRANCH: openwrt-24.10-6.6
   TZ: Asia/Shanghai
   # 移植机型白名单（与 filogic.mk 末尾「移植自 tvliving/lede」段一一对应）
+  # 暂不参与编译的 4 台（缺 uboot 支持，定义已在 filogic.mk/dts 里）：
+  #   tplink_tl-7dr7299-v1 bananapi_bpi-r4-lite glinet_gl-mt3600be tenda_be12-pro
   DEVICE_LIST: >-
     cetron_ct3003-mod cmcc_a10-mod cmcc_rax3000m-emmc cmcc_rax3000m-nand cmcc_xr30-emmc
     cudy_tr3000-256mb-v1 cudy_tr3000-mod fzs_5gcpe-p3 globitel_bt-r320 huasifei_ws3006
     huasifei_ws3009 ikuai_q3000 tenbay_wr3000k xiaomi_mi-router-wr30u
     clx_s20l hf_m7986r1-emmc hf_m7986r1-nand ikuai_q6000 ikuai_q6000-emmc jdcloud_re-cs-05
     xiaomi_redmi-router-ax6000 bananapi_bpi-r3-mini-emmc bananapi_bpi-r3-mini-nand
-    tplink_tl-7dr7299-v1 bananapi_bpi-r4-lite glinet_gl-mt3600be tenda_be12-pro
 
 permissions:
   contents: write
@@ -107,7 +108,7 @@ jobs:
             echo "::error::filogic.mk 缺少设备定义:$miss"
             exit 1
           fi
-          echo "✔ 27 台设备定义齐备"
+          echo "✔ 设备定义齐备"
 
       - name: 更新 feeds
         working-directory: imm
@@ -137,7 +138,7 @@ jobs:
                  package/luci-theme-argon package/luci-app-argon-config
           echo "✔ vantage 就绪，argon 已剔除"
 
-      - name: 生成 .config（27 设备白名单）
+      - name: 生成 .config（设备白名单）
         working-directory: imm
         run: |
           {
@@ -205,7 +206,7 @@ jobs:
           echo ">>> zh-cn 语言包: $zh 个"
           [ "${zh:-0}" -ge 5 ] || { echo "::error::中文语言包过少（$zh）"; exit 1; }
 
-      - name: iStore 注入到 27 台设备的 DEVICE_PACKAGES
+      - name: iStore 注入到白名单设备的 DEVICE_PACKAGES
         working-directory: imm
         run: |
           python3 - <<'PYEOF'
@@ -261,7 +262,7 @@ jobs:
             echo "::error::以下机型 dts 在 6.6 上编不过:$fail"
             exit 1
           fi
-          echo "✔ 27 台 dts 预检全部通过"
+          echo "✔ dts 预检全部通过"
 
       - name: 注入无线首启配置（uci-defaults）
         working-directory: imm
@@ -323,7 +324,7 @@ jobs:
             ls ../out | grep -q "$d" || missing="$missing $d"
           done
           [ -z "$missing" ] || { echo "::error::这些机型没有固件:$missing"; exit 1; }
-          echo "✔ 共 $n 个固件，27 台机型齐全"
+          echo "✔ 共 $n 个固件，机型齐全"
 
       - name: 核对镜像内包清单
         working-directory: imm

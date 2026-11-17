@@ -109,7 +109,7 @@
 	};
 };
 
-&mdio_bus {
+&mdio {
 	phy6: ethernet-phy@6 {
 		compatible = "ethernet-phy-ieee802.3-c45";
 		reg = <6>;

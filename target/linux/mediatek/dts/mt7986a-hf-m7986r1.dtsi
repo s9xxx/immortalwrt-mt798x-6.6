@@ -121,7 +121,7 @@
 	};
 };
 
-&mdio_bus {
+&mdio {
 	switch: switch@1f {
 		compatible = "mediatek,mt7531";
 		reg = <31>;
