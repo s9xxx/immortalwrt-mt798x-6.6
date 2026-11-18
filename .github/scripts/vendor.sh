@@ -75,6 +75,12 @@ cmd_theme() {
      && [ -d package/luci-theme-vantage/ucode/template/themes/vantage ]; then
     log "vantage 主题结构符合 24.10（ucode 模板 + luci-static/vantage）"
     grep -E '^PKG_VERSION|^LUCI_DEPENDS' package/luci-theme-vantage/Makefile 2>/dev/null || true
+    # 默认展开侧栏（图标 + 菜单文字）：vantage 的 data-rail="pinned" 必须加在 <html>
+    # 标签上（CSS 用 html[data-rail=pinned] 匹配，menu-vantage.js 的 this.root 就是
+    # documentElement），加到 <nav> 上无效。默认无此属性时左侧只显示图标 rail。
+    sed -i 's|<html |<html data-rail="pinned" |' \
+      package/luci-theme-vantage/ucode/template/themes/vantage/header.ut
+    log "已设置默认展开侧栏（data-rail=pinned）"
   else
     warn "vantage 主题不可用（结构不兼容 24.10），回退 argon"
     rm -rf package/luci-theme-vantage package/luci-app-vantage
