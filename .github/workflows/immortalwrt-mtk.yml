@@ -25,10 +25,6 @@ on:
         description: '编译完成后发布 Release'
         type: boolean
         default: true
-  schedule:
-    # 每周二、周四 12:00（北京时间）；GitHub cron 用 UTC，04:00 UTC = 12:00 UTC+8
-    - cron: '0 4 * * 2,4'
-
 permissions:
   contents: write
 

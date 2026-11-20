@@ -22,9 +22,6 @@
 name: 🏗️ ImmortalWrt MT798x 移植机型 (lede ported)
 
 on:
-  schedule:
-    # 周一、周三 北京时间 12:00 = UTC 04:00
-    - cron: '0 4 * * 1,3'
   workflow_dispatch:
     inputs:
       make_release:
