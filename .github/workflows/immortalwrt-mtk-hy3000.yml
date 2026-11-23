@@ -259,7 +259,7 @@ jobs:
             cat .github/configs/24-config-general >> .config
             echo "CONFIG_PACKAGE_bash=y" >> .config
             echo "CONFIG_CCACHE=y" >> .config
-            # 主题切到 vantage（配置栈里是 argon）+ 全量简体中文语言包
+            # 主题保持配置栈里的 argon（不再切 vantage）+ 强制中文 + iStore 中文包
             bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" config .config
             echo ">>> 已写入配置栈（$(wc -l < .config) 行）"
 

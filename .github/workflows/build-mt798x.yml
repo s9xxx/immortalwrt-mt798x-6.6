@@ -124,8 +124,8 @@ jobs:
           echo "---- 机型 ----"
           grep -E '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || {
             echo "::error::机型未生效，检查 filogic.mk 是否含对应 Device 定义"; exit 1; }
-          grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config || { echo "::error::vantage 主题未生效"; exit 1; }
-          if grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config; then echo "::error::argon 仍在配置中"; exit 1; fi
+          grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config || { echo "::error::argon 主题未生效"; exit 1; }
+          if grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config; then echo "::error::vantage 仍在配置中"; exit 1; fi
           echo "---- 中文/商店 ----"
           grep -E '^CONFIG_(LUCI_LANG_zh_Hans|PACKAGE_luci-app-store)' .config || true
 
@@ -192,8 +192,9 @@ jobs:
           body: |
             自动构建：ImmortalWrt / ${{ matrix.slug }}
             - 定时：每天 09:00（北京时间）
-            - 主题：luci-theme-vantage（已移除 argon）
+            - 主题：luci-theme-argon（feeds 自带）+ iStore 中文界面
             - 内置：iStore 软件中心 + 简体中文语言包
+            - 无线：CN 国码 + 5G HE160 / 2.4G HE40 + 802.11k/v/r
             - 运行记录：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: out/*
           fail_on_unmatched_files: false

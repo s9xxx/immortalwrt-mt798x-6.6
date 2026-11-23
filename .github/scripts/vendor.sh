@@ -2,23 +2,31 @@
 #
 # 全仓库统一的「默认主题 + iStore 市场 + 中文包」注入助手，供 .github/workflows/*.yml 调用。
 #
-# 主题：luci-theme-vantage（https://github.com/anothaDev/luci-theme-vantage）
-#   该主题 README 明确支持 OpenWrt 25.12 和 24.10，包结构是
-#   htdocs/luci-static/vantage + ucode/template/themes/vantage（新式 ucode 模板，
-#   不是老 LuCI 的 Lua .htm 模板），所以能在本仓库的 24.10 上编译。
-#   若克隆失败或结构不符（例如上游改回老式布局），自动回退 argon，构建不中断。
+# 主题：默认 luci-theme-argon（ImmortalWrt feeds 自带 themes/luci-theme-argon）
+#   默认值可用环境变量覆盖：THEME=argon（默认）/ THEME=vantage
+#   argon 直接来自 feeds，不需要 vendor，配置栈里本来就是 CONFIG_PACKAGE_luci-theme-argon=y。
+#   vantage 属于外部 vendor（https://github.com/anothaDev/luci-theme-vantage），
+#   只有 THEME=vantage 时才克隆；克隆失败或结构不符会自动回退 argon，构建不中断。
+#
+# 语言/商店：强制简体中文（luci.main.lang=zh_cn + LUCI_LANG_zh_Hans + 全量 zh-cn 包），
+#   iStore 市场 luci-app-store 与其中文语言包 luci-i18n-store-zh-cn 一并选入。
+#
+# 无线：uci-defaults 99-wifi-boost 统一做「国码 CN + 5G 开 160MHz + 802.11k/v/r +
+#   HE beamforming」，2.4G 只到 HE40（radio 按 band 自动判断，不会给 2.4G 强塞 HE160）。
 #
 # 用法（在 feed / 配置生成的不同阶段分别调用）：
 #   vendor.sh feed              # 在 feeds.conf.default 里追加 istore 源（feeds update 之前）
 #   vendor.sh store             # feeds update 之后：安装 iStore 市场与中文语言包
-#   vendor.sh theme             # 克隆/校验主题包，结果写入 $PWD/.theme（vantage|argon）
+#   vendor.sh theme             # 校验/准备主题，结果写入 $PWD/.theme（argon|vantage）
 #   vendor.sh collections       # 把 feeds/luci 集合对 bootstrap 的依赖改成本次主题
-#   vendor.sh config <file>     # 在生成的 .config 里切换主题（argon -> vantage 或反之）
-#   vendor.sh uci-defaults      # 写 files/etc/uci-defaults/99-luci-theme-<theme>
+#   vendor.sh config <file>     # 在生成的 .config 里切换主题 + 中文 + iStore
+#   vendor.sh wifi              # 写 files/etc/uci-defaults/99-wifi-boost（无线增强）
+#   vendor.sh uci-defaults      # 写默认主题 / 中文 / 无线三个 uci-defaults 脚本
 #
 set -uo pipefail
 
 THEME_REPO="${THEME_REPO:-https://github.com/anothaDev/luci-theme-vantage}"
+THEME="${THEME:-argon}"
 THEME_FILE="${THEME_FILE:-$PWD/.theme}"
 ISTORE_FEED='src-git istore https://github.com/linkease/istore;main'
 
@@ -27,7 +35,7 @@ warn() { echo "::warning::$*"; }
 err()  { echo "::error::$*"; }
 
 current_theme() {
-  if [ -f "$THEME_FILE" ]; then cat "$THEME_FILE"; else echo vantage; fi
+  if [ -f "$THEME_FILE" ]; then cat "$THEME_FILE"; else echo "${THEME:-argon}"; fi
 }
 
 cmd_feed() {
@@ -56,35 +64,51 @@ cmd_store() {
 }
 
 cmd_theme() {
-  local theme=vantage
+  local theme="$THEME"
+  # 无论选哪个主题，先把外部 vendor 进来的 vantage 包清掉：
+  # vantage 是复制到 package/ 的，若不走 vantage 分支还留着它，
+  # 集合依赖会指向一个没被 .config 选中的包，构建直接失败。
   rm -rf /tmp/vantage-theme package/luci-theme-vantage package/luci-app-vantage
-  # 必须保证 package/ 存在：否则 `cp -a src package/` 会把 src 的内容摊平到 package/
-  mkdir -p package
-  # 只取两个包目录（blob 不全下载），比整仓克隆快很多
-  if git clone -q --depth 1 --filter=blob:none --sparse "$THEME_REPO" /tmp/vantage-theme 2>/dev/null \
-     && ( cd /tmp/vantage-theme && git sparse-checkout set luci-theme-vantage luci-app-vantage >/dev/null 2>&1 ) \
-     && [ -d /tmp/vantage-theme/luci-theme-vantage ]; then
-    cp -a /tmp/vantage-theme/luci-theme-vantage package/
-    [ -d /tmp/vantage-theme/luci-app-vantage ] && cp -a /tmp/vantage-theme/luci-app-vantage package/
-  else
-    warn "克隆 $THEME_REPO 失败"
-  fi
 
-  if [ -f package/luci-theme-vantage/Makefile ] \
-     && [ -d package/luci-theme-vantage/htdocs/luci-static/vantage ] \
-     && [ -d package/luci-theme-vantage/ucode/template/themes/vantage ]; then
-    log "vantage 主题结构符合 24.10（ucode 模板 + luci-static/vantage）"
-    grep -E '^PKG_VERSION|^LUCI_DEPENDS' package/luci-theme-vantage/Makefile 2>/dev/null || true
-    # 默认展开侧栏（图标 + 菜单文字）：vantage 的 data-rail="pinned" 必须加在 <html>
-    # 标签上（CSS 用 html[data-rail=pinned] 匹配，menu-vantage.js 的 this.root 就是
-    # documentElement），加到 <nav> 上无效。默认无此属性时左侧只显示图标 rail。
-    sed -i 's|<html |<html data-rail="pinned" |' \
-      package/luci-theme-vantage/ucode/template/themes/vantage/header.ut
-    log "已设置默认展开侧栏（data-rail=pinned）"
+  if [ "$theme" = "vantage" ]; then
+    # 必须保证 package/ 存在：否则 `cp -a src package/` 会把 src 的内容摊平到 package/
+    mkdir -p package
+    # 只取两个包目录（blob 不全下载），比整仓克隆快很多
+    if git clone -q --depth 1 --filter=blob:none --sparse "$THEME_REPO" /tmp/vantage-theme 2>/dev/null \
+       && ( cd /tmp/vantage-theme && git sparse-checkout set luci-theme-vantage luci-app-vantage >/dev/null 2>&1 ) \
+       && [ -d /tmp/vantage-theme/luci-theme-vantage ]; then
+      cp -a /tmp/vantage-theme/luci-theme-vantage package/
+      [ -d /tmp/vantage-theme/luci-app-vantage ] && cp -a /tmp/vantage-theme/luci-app-vantage package/
+    else
+      warn "克隆 $THEME_REPO 失败"
+    fi
+
+    if [ -f package/luci-theme-vantage/Makefile ] \
+       && [ -d package/luci-theme-vantage/htdocs/luci-static/vantage ] \
+       && [ -d package/luci-theme-vantage/ucode/template/themes/vantage ]; then
+      log "vantage 主题结构符合 24.10（ucode 模板 + luci-static/vantage）"
+      grep -E '^PKG_VERSION|^LUCI_DEPENDS' package/luci-theme-vantage/Makefile 2>/dev/null || true
+      # 默认展开侧栏（图标 + 菜单文字）：vantage 的 data-rail="pinned" 必须加在 <html>
+      # 标签上（CSS 用 html[data-rail=pinned] 匹配，menu-vantage.js 的 this.root 就是
+      # documentElement），加到 <nav> 上无效。默认无此属性时左侧只显示图标 rail。
+      sed -i 's|<html |<html data-rail="pinned" |' \
+        package/luci-theme-vantage/ucode/template/themes/vantage/header.ut
+      log "已设置默认展开侧栏（data-rail=pinned）"
+    else
+      warn "vantage 主题不可用（结构不兼容 24.10），回退 argon"
+      rm -rf package/luci-theme-vantage package/luci-app-vantage
+      theme=argon
+    fi
   else
-    warn "vantage 主题不可用（结构不兼容 24.10），回退 argon"
-    rm -rf package/luci-theme-vantage package/luci-app-vantage
+    # argon：直接用 feeds 自带的 immortalwrt/luci themes/luci-theme-argon，不需要 vendor。
+    # 这里只做一次存在性提示（feeds install 顺序不对时能早点看出来），不硬失败。
     theme=argon
+    if [ ! -d feeds/luci/themes/luci-theme-argon ] \
+       && [ ! -d package/feeds/luci/luci-theme-argon ]; then
+      warn "feeds 里暂时没看到 luci-theme-argon（若后续 feeds install 成功则无影响）"
+    else
+      log "argon 主题来自 feeds：immortalwrt/luci themes/luci-theme-argon"
+    fi
   fi
   echo "$theme" > "$THEME_FILE"
   log "本次默认主题: $theme"
@@ -145,6 +169,10 @@ cmd_config() {
       fi
     fi
   else
+    # argon：配置栈里本来就是 CONFIG_PACKAGE_luci-theme-argon=y，
+    # 这里只做「清掉 vantage 残留 + 缺失时补上」，不重复写入
+    sed -i -E 's|^CONFIG_PACKAGE_luci-theme-vantage=y|# CONFIG_PACKAGE_luci-theme-vantage is not set|' "$f"
+    sed -i -E 's|^CONFIG_PACKAGE_luci-app-vantage=y|# CONFIG_PACKAGE_luci-app-vantage is not set|' "$f"
     grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' "$f" || echo 'CONFIG_PACKAGE_luci-theme-argon=y' >> "$f"
   fi
   # 全量简体中文语言包（只对本次构建里存在的包生效；注意要补 CONFIG_ 前缀，
@@ -159,7 +187,26 @@ cmd_config() {
     fi
   fi
   if [ -f tmp/.config-package.in ]; then
-    awk '/^config PACKAGE_luci-i18n-.+-zh-cn$/{print "CONFIG_"$2"=y"}' tmp/.config-package.in > /tmp/zh-i18n.txt || true
+    # 中文界面开关：luci.mk 里 luci-i18n-*-zh-cn 的 DEFAULT:=LUCI_LANG_zh_Hans，
+    # 不打开这个开关，全量枚举出来的 zh-cn =y 会在 defconfig 时被压回 n，
+    # 表现就是「装了一堆中文包，界面还是英文」。
+    # 注意：.config-package.in 里的 config 行可能带 tab/空格前缀（package-metadata.pl
+    # 的缩进），所以判定符号时必须允许行首空白，否则会出现「元数据明明有、却报缺失」
+    if grep -qE '^[[:space:]]*config LUCI_LANG_zh_Hans$' tmp/.config-package.in; then
+      grep -qxF 'CONFIG_LUCI_LANG_zh_Hans=y' "$f" || echo 'CONFIG_LUCI_LANG_zh_Hans=y' >> "$f"
+      log "已打开 CONFIG_LUCI_LANG_zh_Hans（中文界面开关）"
+    else
+      warn "元数据里没有 LUCI_LANG_zh_Hans 符号，跳过语言开关"
+    fi
+    # iStore 市场 + 它的中文语言包：符号存在才写，避免污染 kconfig
+    for p in luci-app-store luci-i18n-store-zh-cn; do
+      if grep -qE "^[[:space:]]*config PACKAGE_${p}\$" tmp/.config-package.in; then
+        grep -qxF "CONFIG_PACKAGE_${p}=y" "$f" || echo "CONFIG_PACKAGE_${p}=y" >> "$f"
+      else
+        warn "元数据里没有 PACKAGE_${p}（istore feed 可能没拉到）"
+      fi
+    done
+    awk '/^[[:space:]]*config PACKAGE_luci-i18n-.+-zh-cn$/{print "CONFIG_"$2"=y"}' tmp/.config-package.in > /tmp/zh-i18n.txt || true
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       grep -qxF "$line" "$f" || echo "$line" >> "$f"
@@ -167,6 +214,54 @@ cmd_config() {
     log "简体中文语言包: $(wc -l < /tmp/zh-i18n.txt) 个候选"
   fi
   log "已按主题 $theme 处理 $f"
+}
+
+cmd_wifi() {
+  mkdir -p files/etc/uci-defaults
+  cat > files/etc/uci-defaults/99-wifi-boost <<'SH'
+#!/bin/sh
+# 无线首启增强（全机型通用，按 band 自动判断，不要手改各机型分支）：
+#   - 国码 CN + 802.11d 国码广播（部分驱动据此放开功率上限）
+#   - 5G/6G 开 160MHz（HE160）；2.4G 最高 HE40 —— 给 2.4G 强塞 HE160 会让 radio 起不来
+#   - 802.11k/v/r 快速漫游、HE SU beamformee、关掉 disassoc_low_ack 的伪断连
+[ -f /etc/config/wireless ] || exit 0
+
+for r in $(uci -q show wireless | sed -n 's/^wireless\.\(radio[0-9]\+\)=.*/\1/p'); do
+  band=$(uci -q get wireless.$r.band)
+  if [ -z "$band" ]; then
+    case "$(uci -q get wireless.$r.hwmode)" in
+      11a|11ac|11ax|11be) band=5g ;;
+      *)                  band=2g ;;
+    esac
+  fi
+  uci -q set wireless.$r.disabled='0'
+  uci -q set wireless.$r.country='CN'
+  uci -q set wireless.$r.ieee80211d='1'
+  case "$band" in
+    5g|6g)
+      uci -q set wireless.$r.channel='auto'
+      uci -q set wireless.$r.htmode='HE160'
+      ;;
+    2g)
+      uci -q set wireless.$r.htmode='HE40'
+      ;;
+  esac
+  echo "wifi-boost: $r band=$band htmode=$(uci -q get wireless.$r.htmode)"
+done
+
+for i in $(uci -q show wireless | sed -n 's/^wireless\.\(@wifi-iface\[[0-9]\+\]\)=.*/\1/p'); do
+  uci -q set wireless.$i.ieee80211k='1'
+  uci -q set wireless.$i.ieee80211v='1'
+  uci -q set wireless.$i.ieee80211r='1'
+  uci -q set wireless.$i.he_su_beamformee='1'
+  uci -q set wireless.$i.disassoc_low_ack='0'
+done
+
+uci -q commit wireless
+exit 0
+SH
+  chmod +x files/etc/uci-defaults/99-wifi-boost
+  log "已写入 99-wifi-boost（国码 CN + 5G 160MHz + 802.11k/v/r + beamformee）"
 }
 
 cmd_uci_defaults() {
@@ -192,6 +287,19 @@ SH
     chmod +x files/etc/uci-defaults/99-luci-theme-argon
   fi
   log "已写入 99-luci-theme-$theme"
+
+  # 默认语言强制简体中文：LuCI 与 iStore 市场都跟随 luci.main.lang，
+  # 只装 luci-i18n-store-zh-cn 而不改这个，市场仍按浏览器语言显示英文。
+  cat > files/etc/uci-defaults/99-luci-lang-zh-cn <<'SH'
+#!/bin/sh
+uci -q set luci.main.lang='zh_cn'
+uci -q commit luci
+exit 0
+SH
+  chmod +x files/etc/uci-defaults/99-luci-lang-zh-cn
+  log "已写入 99-luci-lang-zh-cn（luci.main.lang=zh_cn，iStore 跟随）"
+
+  cmd_wifi
 }
 
 case "${1:-}" in
@@ -200,6 +308,7 @@ case "${1:-}" in
   theme)        cmd_theme ;;
   collections)  cmd_collections ;;
   config)       shift; cmd_config "${1:-.config}" ;;
+  wifi)         cmd_wifi ;;
   uci-defaults) cmd_uci_defaults ;;
-  *) echo "用法: $0 {feed|store|theme|collections|config <file>|uci-defaults}"; exit 2 ;;
+  *) echo "用法: $0 {feed|store|theme|collections|config <file>|wifi|uci-defaults}"; exit 2 ;;
 esac

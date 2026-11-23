@@ -6,7 +6,7 @@
 #   512MB NAND：ubi 分区 0x005c0000 + 0x1FA40000，IMAGE_SIZE 520000k
 #
 # 机制：单 job 只编这一台（CONFIG_TARGET_PROFILE），磁盘清理 + 4G swap + ccache 加速，
-#       默认主题 luci-theme-vantage（集合依赖替换 + 99 号 uci-defaults 强制 mediaurlbase）。
+#       默认主题 luci-theme-argon（feeds 自带 + 99 号 uci-defaults 强制 mediaurlbase）。
 name: ImmortalWrt TR3000 512MB 编译
 
 on:

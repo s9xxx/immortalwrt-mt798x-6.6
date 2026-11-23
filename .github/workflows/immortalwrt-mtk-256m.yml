@@ -11,10 +11,9 @@
 #    XR30 用 cmcc_xr30-nand（KERNEL_IN_UBI + sysupgrade-tar + factory.bin）。
 #    ⚠️ 这两台必须是「硬改 256M Flash + 256M 大分区 U-Boot」，128M 的机器直接刷会起不来。
 #
-# 3) 默认主题：luci-theme-vantage（https://github.com/anothaDev/luci-theme-vantage）
-#    该主题 README 明确支持 25.12 和 24.10（ucode/template + htdocs/luci-static/vantage，
-#    不是老的 LuCI Lua 模板），所以本流程用 vantage 并移除 argon。
-#    兜底：若 defconfig 后 vantage 没被选中（依赖不满足），自动回退 argon，构建不中断。
+# 3) 默认主题：luci-theme-argon（ImmortalWrt feeds 自带 themes/luci-theme-argon）
+#    直接用 feeds 里的包，不再 vendor 外部主题；首启 99-luci-theme-argon 强制
+#    mediaurlbase，bootstrap 保留作运行时兜底。
 #
 # 4) iStore 市场：官方 istore feed（linkease/istore）+ 全量简体中文语言包。
 # 5) 定时：每周二、周四 12:00（北京时间）= cron '0 4 * * 2,4'（UTC），成功后发布 Release。
@@ -420,8 +419,8 @@ jobs:
             echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
             echo "- 触发方式：${{ github.event_name }}"
             echo "- 提交：${{ github.sha }}"
-            echo "- 默认主题：${theme}（luci-theme-vantage，24.10 兼容）"
-            echo "- 市场/语言：iStore（luci-app-store）+ 全量简体中文语言包"
+            echo "- 默认主题：${theme}（argon 为 feeds 自带，稳定可靠）"
+            echo "- 市场/语言：iStore（luci-app-store + luci-i18n-store-zh-cn），界面强制 zh_cn"
             echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
             echo ""
             echo "| 机型 | 说明 |"

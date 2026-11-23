@@ -13,9 +13,9 @@
 #     mt7988: tplink_tl-7dr7299-v1 / mt7987: bananapi_bpi-r4-lite、glinet_gl-mt3600be、tenda_be12-pro
 #
 # 固化配置：
-#   - 默认主题 luci-theme-vantage（anothaDev），argon 全部剔除
-#   - iStore 市场（linkease/istore）+ 全量简体中文语言包
-#   - 无线首启：radio 全开 + CN 国码 + HE160 + 802.11k/v/r
+#   - 默认主题 luci-theme-argon（ImmortalWrt feeds 自带 themes/luci-theme-argon）
+#   - iStore 市场（linkease/istore）+ 中文语言包 + 强制简体中文界面（luci.main.lang=zh_cn）
+#   - 无线首启增强：radio 全开 + CN 国码 + 5G HE160 / 2.4G HE40 + 802.11k/v/r + beamformee
 #   - 定时：每周一、周三 北京时间 12:00（UTC 04:00）
 #=====================================================================================
 
@@ -120,20 +120,22 @@ jobs:
           done
           [ "$ok" = "1" ] || { echo "::error::feeds update 连续 3 次失败"; exit 1; }
           ./scripts/feeds install -a
+          # iStore 市场 + 它的中文语言包（两个都要，缺语言包界面是英文）
           ./scripts/feeds install -d y -p istore luci-app-store || true
+          ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || true
 
-      - name: 默认主题 vantage（剔除 argon）
+      - name: 默认主题 argon（feeds 自带，不 vendor 外部主题）
         working-directory: imm
         run: |
-          git clone -q --depth 1 https://github.com/anothaDev/luci-theme-vantage.git /tmp/vantage
-          cp -a /tmp/vantage/luci-theme-vantage package/
-          # 主题仓库自带仪表盘插件时一并带入
-          [ -d /tmp/vantage/luci-app-vantage ] && cp -a /tmp/vantage/luci-app-vantage package/ || true
-          test -f package/luci-theme-vantage/Makefile || { echo "::error::vantage 主题包缺失"; exit 1; }
-          # argon 全部剔除（feeds 里可能有，树内也不允许残留）
-          rm -rf feeds/luci/themes/luci-theme-argon feeds/luci/applications/luci-app-argon-config \
-                 package/luci-theme-argon package/luci-app-argon-config
-          echo "✔ vantage 就绪，argon 已剔除"
+          # argon 由 feeds 的 immortalwrt/luci themes/luci-theme-argon 提供，
+          # 配置栈里本来就是 CONFIG_PACKAGE_luci-theme-argon=y，不需要克隆；
+          # 只需清掉历史遗留的 vantage 包，避免集合依赖指向未选中的包。
+          rm -rf package/luci-theme-vantage package/luci-app-vantage /tmp/vantage
+          if [ -d feeds/luci/themes/luci-theme-argon ]; then
+            echo "✔ 使用 feeds 自带 luci-theme-argon（$(grep -E '^PKG_VERSION' feeds/luci/themes/luci-theme-argon/Makefile || true)）"
+          else
+            echo "::warning::feeds 里没找到 luci-theme-argon，主题可能缺失"
+          fi
 
       - name: 生成 .config（设备白名单）
         working-directory: imm
@@ -152,11 +154,12 @@ jobs:
             # 不设这个开关，全量枚举出来的 zh-cn =y 会被 kconfig 压回 n
             echo "CONFIG_LUCI_LANG_zh_Hans=y"
             echo "CONFIG_LUCI_LANG_en=y"
-            echo "CONFIG_PACKAGE_luci-theme-vantage=y"
-            echo "# CONFIG_PACKAGE_luci-theme-argon is not set"
-            echo "# CONFIG_PACKAGE_luci-app-argon-config is not set"
+            # 默认主题 argon（feeds 自带），vantage 不再引入
+            echo "CONFIG_PACKAGE_luci-theme-argon=y"
+            echo "# CONFIG_PACKAGE_luci-theme-vantage is not set"
             # iStore：kconfig 只要 >=m，真正装进固件靠 DEVICE_PACKAGES 注入
             echo "CONFIG_PACKAGE_luci-app-store=m"
+            echo "CONFIG_PACKAGE_luci-i18n-store-zh-cn=m"
             echo "CONFIG_PACKAGE_luci-lib-taskd=m"
             echo "CONFIG_PACKAGE_luci-lib-xterm=m"
             echo "CONFIG_PACKAGE_taskd=m"
@@ -193,8 +196,9 @@ jobs:
           want=$(echo $DEVICE_LIST | wc -w)
           echo ">>> 已选设备 $n_on / 期望 $want"
           [ "$n_on" = "$want" ] || { grep '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_' .config | grep '=y$'; echo "::error::设备数 $n_on != $want"; exit 1; }
-          grep -q '^CONFIG_PACKAGE_luci-theme-vantage=y$' .config || { echo "::error::vantage 主题未选中"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config || { echo "::error::argon 主题未选中"; exit 1; }
           grep -qE '^CONFIG_PACKAGE_luci-app-store=[ym]$' .config || { echo "::error::iStore(luci-app-store) 未选中"; exit 1; }
+          grep -qE '^CONFIG_PACKAGE_luci-i18n-store-zh-cn=[ym]$' .config || { echo "::error::iStore 中文语言包未选中"; exit 1; }
 
           # 全量简体中文语言包（.config-package.in 的 config 行带 tab 前缀，不能用 ^config）
           awk '/^[[:space:]]*config PACKAGE_luci-i18n-.+-zh-cn$/{print "CONFIG_"$2"=y"}' tmp/.config-package.in >> .config
@@ -209,9 +213,7 @@ jobs:
           python3 - <<'PYEOF'
           import os, re, sys
           devs = os.environ['DEVICE_LIST'].split()
-          extra = ['luci-app-store']
-          if os.path.exists('package/luci-app-vantage/Makefile'):
-              extra.append('luci-app-vantage')
+          extra = ['luci-app-store', 'luci-i18n-store-zh-cn']
           add = '  DEVICE_PACKAGES += %s\n' % ' '.join(extra)
           path = 'target/linux/mediatek/image/filogic.mk'
           s = open(path, encoding='utf-8').read()
@@ -297,35 +299,15 @@ jobs:
           fi
           echo "✔ dts 预检全部通过"
 
-      - name: 注入无线首启配置（uci-defaults）
+      - name: 注入无线增强 + 默认主题 + 中文语言（uci-defaults）
         working-directory: imm
         run: |
-          mkdir -p files/etc/uci-defaults
-          cat > files/etc/uci-defaults/99-wifi-cn <<'SH'
-          #!/bin/sh
-          [ -f /etc/config/wireless ] || exit 0
-          uci -q set wireless.radio0.disabled='0'
-          uci -q set wireless.radio1.disabled='0'
-          uci -q set wireless.radio0.country='CN'
-          uci -q set wireless.radio1.country='CN'
-          uci -q set wireless.radio0.htmode='HE160' 2>/dev/null
-          uci -q set wireless.radio1.htmode='HE160' 2>/dev/null
-          uci -q set wireless.@wifi-iface[0].ieee80211k='1'
-          uci -q set wireless.@wifi-iface[0].ieee80211v='1'
-          uci -q set wireless.@wifi-iface[0].ieee80211r='1'
-          uci -q commit wireless
-          exit 0
-          SH
-          chmod +x files/etc/uci-defaults/99-wifi-cn
-          cat > files/etc/uci-defaults/98-theme-vantage <<'SH'
-          #!/bin/sh
-          uci -q set luci.main.mediaurlbase='/luci-static/vantage'
-          uci -q set luci.themes.Vantage='/luci-static/vantage'
-          uci -q commit luci
-          exit 0
-          SH
-          chmod +x files/etc/uci-defaults/98-theme-vantage
-          echo "✔ uci-defaults 就绪"
+          # 统一走 vendor.sh，避免本流程和其他四个流程各写一份走偏
+          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" uci-defaults
+          echo "===== files/etc/uci-defaults ====="
+          ls -l files/etc/uci-defaults/
+          echo "===== 99-wifi-boost ====="
+          cat files/etc/uci-defaults/99-wifi-boost
 
       - name: 预下载软件包
         working-directory: imm
@@ -362,10 +344,10 @@ jobs:
       - name: 核对镜像内包清单
         working-directory: imm
         run: |
-          echo "===== 抽查 manifest（vantage / iStore / 中文）====="
+          echo "===== 抽查 manifest（argon / iStore / 中文）====="
           for m in $(ls bin/targets/mediatek/filogic/*.manifest | head -3); do
             echo "--- $m"
-            grep -E 'luci-theme-vantage|luci-app-store|luci-app-vantage|luci-i18n-base-zh-cn' "$m" || echo "  (缺)"
+            grep -E 'luci-theme-argon|luci-app-store|luci-i18n-store-zh-cn|luci-i18n-base-zh-cn' "$m" || echo "  (缺)"
           done
 
       - name: 发布 Release
@@ -383,8 +365,9 @@ jobs:
             echo "### ImmortalWrt MT798x 移植机型（lede ported）"
             echo "- 源码：[s9xxx/immortalwrt-mt798x-6.6](${REPO_URL}/tree/${REPO_BRANCH})"
             echo "- 内核：6.6 / 目标：mediatek filogic"
-            echo "- 默认主题：luci-theme-vantage（argon 已剔除）"
-            echo "- 含 iStore 软件中心 + 简体中文语言包"
+            echo "- 默认主题：luci-theme-argon（feeds 自带）"
+            echo "- 含 iStore 软件中心 + 简体中文语言包（界面已强制 zh_cn）"
+            echo "- 无线增强：CN 国码 + 5G HE160 / 2.4G HE40 + 802.11k/v/r + beamformee"
             echo "- 编译时间：$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S') (UTC+8)"
             echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
             echo
