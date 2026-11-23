@@ -348,7 +348,12 @@ jobs:
         working-directory: imm
         run: |
           # 统一走 vendor.sh，避免本流程和其他四个流程各写一份走偏
-          bash "$GITHUB_WORKSPACE/.github/scripts/vendor.sh" uci-defaults
+          # 本 workflow 不做 actions/checkout（源码是另外 clone 到 imm/ 的），
+          # 所以 $GITHUB_WORKSPACE/.github/scripts/vendor.sh 根本不存在（2026-11-23
+          # 实测 exit 127）。脚本在 imm 克隆里同分支就有一份，优先用它。
+          VENDOR=.github/scripts/vendor.sh
+          [ -f "$VENDOR" ] || VENDOR="$GITHUB_WORKSPACE/.github/scripts/vendor.sh"
+          bash "$VENDOR" uci-defaults
           echo "===== files/etc/uci-defaults ====="
           ls -l files/etc/uci-defaults/
           echo "===== 99-wifi-boost ====="
