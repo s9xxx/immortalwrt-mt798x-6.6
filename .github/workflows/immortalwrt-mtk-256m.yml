@@ -246,7 +246,8 @@ jobs:
           CONFIG_LUCI_LANG_zh_Hans=y
           CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
           CONFIG_PACKAGE_luci-app-store=y
-          CONFIG_PACKAGE_luci-i18n-store-zh-cn=y
+          # iStore 的中文翻译内置在 luci-app-store 里，istore 源没有独立的
+          # luci-i18n-store-zh-cn 包（2026-11-23 实测），写进来会被 kconfig 丢弃
           CONFIG_PACKAGE_libmbedtls=y
           CONFIG_PACKAGE_libustream-mbedtls=y
           # CONFIG_SIGNED_PACKAGES is not set
@@ -278,7 +279,10 @@ jobs:
             grep -qE "^CONFIG_PACKAGE_${p}=y$" .config || { echo "::error::${p} 未生效"; exit 1; }
           done
           n=$(grep -cE '^CONFIG_PACKAGE_luci-i18n-.+-zh-cn=y$' .config || true)
-          [ "$n" -ge 5 ] || { echo "::error::简体中文语言包数量异常：$n"; exit 1; }
+          # 不写死 5：iStore 没有独立中文包时会少一个，只要基础中文包还在就算通过
+          [ "$n" -ge 3 ] || { echo "::error::简体中文语言包数量异常：$n"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config \
+            || { echo "::error::luci-i18n-base-zh-cn 未生效（界面不会是中文）"; exit 1; }
           echo "✔ 中文语言包 $n 个；主题 $theme；iStore 已选入"
           grep -E "CONFIG_PACKAGE_(kmod-mt7915e|kmod-mt7981-firmware|mt7981-wo-firmware|wpad-openssl)=" .config
           grep -q "CONFIG_SIGNED_PACKAGES is not set" .config \
@@ -420,7 +424,7 @@ jobs:
             echo "- 触发方式：${{ github.event_name }}"
             echo "- 提交：${{ github.sha }}"
             echo "- 默认主题：${theme}（argon 为 feeds 自带，稳定可靠）"
-            echo "- 市场/语言：iStore（luci-app-store + luci-i18n-store-zh-cn），界面强制 zh_cn"
+            echo "- 市场/语言：iStore（luci-app-store，中文内置）+ 中文界面（luci.main.lang=zh_cn）"
             echo "- 默认 IP：192.168.1.1 / 用户名 root / 密码：无"
             echo ""
             echo "| 机型 | 说明 |"

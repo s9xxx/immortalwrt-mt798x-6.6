@@ -50,7 +50,13 @@ cmd_feed() {
 cmd_store() {
   # feeds install -a 不一定装上 istore feed 的包，显式再装一遍
   ./scripts/feeds install -d y -p istore luci-app-store || warn "luci-app-store 安装失败"
-  ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || warn "luci-i18n-store-zh-cn 安装失败"
+  # iStore 的中文翻译内置在 luci-app-store 里，istore 源通常没有独立的
+  # luci-i18n-store-zh-cn；只有确实存在时才装，避免每次都报一条假失败
+  if [ -d feeds/istore/luci-i18n-store-zh-cn ] || [ -d package/feeds/istore/luci-i18n-store-zh-cn ]; then
+    ./scripts/feeds install -d y -p istore luci-i18n-store-zh-cn || warn "luci-i18n-store-zh-cn 安装失败"
+  else
+    log "istore 源无独立中文包（iStore 中文内置），跳过 luci-i18n-store-zh-cn"
+  fi
   found=""
   for p in package/feeds/istore/luci-app-store package/feeds/luci/luci-app-store feeds/istore/luci-app-store; do
     [ -f "$p/Makefile" ] && found="$p" && break
@@ -198,10 +204,12 @@ cmd_config() {
     else
       warn "元数据里没有 LUCI_LANG_zh_Hans 符号，跳过语言开关"
     fi
-    # iStore 市场 + 它的中文语言包：符号存在才写，避免污染 kconfig
+    # iStore 市场 + 它的中文语言包（后者多数版本没有，存在才写，避免污染 kconfig）
     for p in luci-app-store luci-i18n-store-zh-cn; do
       if grep -qE "^[[:space:]]*config PACKAGE_${p}\$" tmp/.config-package.in; then
         grep -qxF "CONFIG_PACKAGE_${p}=y" "$f" || echo "CONFIG_PACKAGE_${p}=y" >> "$f"
+      elif [ "$p" = "luci-i18n-store-zh-cn" ]; then
+        log "元数据里没有 PACKAGE_${p}（iStore 中文内置），跳过"
       else
         warn "元数据里没有 PACKAGE_${p}（istore feed 可能没拉到）"
       fi

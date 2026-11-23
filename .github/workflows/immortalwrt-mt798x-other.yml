@@ -198,7 +198,14 @@ jobs:
           [ "$n_on" = "$want" ] || { grep '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_' .config | grep '=y$'; echo "::error::设备数 $n_on != $want"; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-theme-argon=y$' .config || { echo "::error::argon 主题未选中"; exit 1; }
           grep -qE '^CONFIG_PACKAGE_luci-app-store=[ym]$' .config || { echo "::error::iStore(luci-app-store) 未选中"; exit 1; }
-          grep -qE '^CONFIG_PACKAGE_luci-i18n-store-zh-cn=[ym]$' .config || { echo "::error::iStore 中文语言包未选中"; exit 1; }
+          # iStore 的中文翻译内置在 luci-app-store 里，istore 源并没有独立的
+          # luci-i18n-store-zh-cn 包；只有元数据里确实存在该包时才校验，
+          # 否则硬失败会让整条流水线白编（2026-11-23 实测 feeds install 装不到它）。
+          if grep -qE '^[[:space:]]*config PACKAGE_luci-i18n-store-zh-cn$' tmp/.config-package.in; then
+            grep -qE '^CONFIG_PACKAGE_luci-i18n-store-zh-cn=[ym]$' .config || { echo "::error::iStore 中文语言包未选中"; exit 1; }
+          else
+            echo "::warning::istore 源无独立 luci-i18n-store-zh-cn（中文内置在 luci-app-store），跳过该校验"
+          fi
 
           # 全量简体中文语言包（.config-package.in 的 config 行带 tab 前缀，不能用 ^config）
           awk '/^[[:space:]]*config PACKAGE_luci-i18n-.+-zh-cn$/{print "CONFIG_"$2"=y"}' tmp/.config-package.in >> .config
@@ -213,7 +220,13 @@ jobs:
           python3 - <<'PYEOF'
           import os, re, sys
           devs = os.environ['DEVICE_LIST'].split()
-          extra = ['luci-app-store', 'luci-i18n-store-zh-cn']
+          extra = ['luci-app-store']
+          # iStore 的中文在内置 po 里，独立语言包存在时才注入
+          for cand in ('feeds/istore/luci-i18n-store-zh-cn',
+                       'package/feeds/istore/luci-i18n-store-zh-cn'):
+              if os.path.isdir(cand):
+                  extra.append('luci-i18n-store-zh-cn')
+                  break
           add = '  DEVICE_PACKAGES += %s\n' % ' '.join(extra)
           path = 'target/linux/mediatek/image/filogic.mk'
           s = open(path, encoding='utf-8').read()
