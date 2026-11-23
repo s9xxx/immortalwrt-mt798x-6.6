@@ -398,7 +398,7 @@ jobs:
           if-no-files-found: error
 
       - name: 发布 Release
-        if: ${{ github.event_name == 'schedule' || inputs.make_release != false }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.make_release }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
