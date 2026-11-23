@@ -350,6 +350,12 @@ jobs:
               || { echo "::error::$d 没有产出 sysupgrade 固件"; exit 1; }
             echo "✔ $d 产物就绪"
           done
+          # XR30 NAND 必须 factory.bin（UBI，首次刷）+ sysupgrade.bin（升级）双产物齐全
+          for kind in factory sysupgrade; do
+            ls out/*cmcc_xr30-nand*squashfs-${kind}* >/dev/null 2>&1 \
+              || { echo "::error::cmcc_xr30-nand 缺少 $kind 产物"; exit 1; }
+          done
+          echo "✔ cmcc_xr30-nand 的 factory + sysupgrade 双产物齐全"
           cp -f "$B"/sha256sums "$B"/profiles.json out/ 2>/dev/null || true
 
           # 安全护栏：绝不发布引导工件（在老 U-Boot 上刷 preloader 会写坏 BL2 变砖）

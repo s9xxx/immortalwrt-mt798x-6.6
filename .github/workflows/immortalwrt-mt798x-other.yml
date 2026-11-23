@@ -1,9 +1,9 @@
 #=====================================================================================
 # Build ImmortalWrt-MT798x-6.6 (s9xxx) for lede/Kwrt 移植机型（mt798x / filogic）
 #=====================================================================================
-# 覆盖 tvliving/lede 有、immortalwrt-mt798x-6.6 原本没有的 filogic 设备（本 workflow 先编 23 台，
+# 覆盖 tvliving/lede 有、immortalwrt-mt798x-6.6 原本没有的 filogic 设备（本 workflow 先编 24 台，
 #   mt7981: cetron_ct3003-mod / cmcc_a10-mod / cmcc_rax3000m-emmc / cmcc_rax3000m-nand /
-#           cmcc_xr30-emmc / cudy_tr3000-256mb-v1 / cudy_tr3000-mod / fzs_5gcpe-p3 /
+#           cmcc_xr30-emmc / cmcc_xr30-nand / cudy_tr3000-256mb-v1 / cudy_tr3000-mod / fzs_5gcpe-p3 /
 #           globitel_bt-r320 / huasifei_ws3006 / huasifei_ws3009 / ikuai_q3000 /
 #           tenbay_wr3000k / xiaomi_mi-router-wr30u
 #   mt7986: clx_s20l / hf_m7986r1-emmc / hf_m7986r1-nand / ikuai_q6000 / ikuai_q6000-emmc /
@@ -45,7 +45,7 @@ env:
   # 暂不参与编译的 4 台（缺 uboot 支持，定义已在 filogic.mk/dts 里）：
   #   tplink_tl-7dr7299-v1 bananapi_bpi-r4-lite glinet_gl-mt3600be tenda_be12-pro
   DEVICE_LIST: >-
-    cetron_ct3003-mod cmcc_a10-mod cmcc_rax3000m-emmc cmcc_rax3000m-nand cmcc_xr30-emmc
+    cetron_ct3003-mod cmcc_a10-mod cmcc_rax3000m-emmc cmcc_rax3000m-nand cmcc_xr30-emmc cmcc_xr30-nand
     cudy_tr3000-256mb-v1 cudy_tr3000-mod fzs_5gcpe-p3 globitel_bt-r320 huasifei_ws3006
     huasifei_ws3009 ikuai_q3000 tenbay_wr3000k xiaomi_mi-router-wr30u
     clx_s20l hf_m7986r1-emmc hf_m7986r1-nand ikuai_q6000 ikuai_q6000-emmc jdcloud_re-cs-05
@@ -96,7 +96,7 @@ jobs:
           git clone --depth 1 ${REPO_URL} -b ${REPO_BRANCH} imm
           cd imm
           git log -1 --format="commit: %H  date: %ci"
-          # 确认 27 台设备都在 filogic.mk 里（漏了就早失败，别等到编译）
+          # 确认白名单里每台设备都在 filogic.mk 里（漏了就早失败，别等到编译）
           miss=""
           for d in $DEVICE_LIST; do
             grep -q "^define Device/${d}$" target/linux/mediatek/image/filogic.mk || miss="$miss $d"
@@ -389,6 +389,13 @@ jobs:
             ls ../out | grep -q "$d" || missing="$missing $d"
           done
           [ -z "$missing" ] || { echo "::error::这些机型没有固件:$missing"; exit 1; }
+
+          # XR30 NAND 必须同时产出 factory.bin（UBI，首次刷机）和 sysupgrade.bin（升级）
+          for kind in factory sysupgrade; do
+            ls ../out | grep -q "cmcc_xr30-nand.*${kind}" \
+              || { echo "::error::cmcc_xr30-nand 缺少 $kind 产物"; exit 1; }
+          done
+          echo "✔ cmcc_xr30-nand 的 factory + sysupgrade 双产物齐全"
           echo "✔ 共 $n 个固件，机型齐全"
 
       - name: 核对镜像内包清单
