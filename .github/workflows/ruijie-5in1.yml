@@ -193,6 +193,12 @@ jobs:
             echo 'CONFIG_DEVEL=y'
             echo 'CONFIG_CCACHE=y'
             cat ../devices-pack/"$SLUG"/config.fragment
+            # iStore 依赖：只写 luci-app-store 时，缺 TAR_XZ / lua 运行时 / taskd 会被 kconfig
+            # 整包丢掉（6.6 仓库的 customize.sh 就缺这一段，导致“iStore 市场未生效”）
+            for p in luci-app-store luci-lib-taskd luci-lib-xterm taskd \
+                     libuci-lua curl tar mount-utils xz-utils luci-compat luci-lua-runtime; do
+              echo "CONFIG_PACKAGE_${p}=y"
+            done
           } > .config
           echo "---- 基础配置 ----"
           cat .config
