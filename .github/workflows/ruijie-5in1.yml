@@ -222,6 +222,14 @@ jobs:
           cd openwrt
           DEV=$(sed -n 's/^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_\(.*\)=y$/\1/p' ../devices-pack/"$SLUG"/config.fragment | head -1 | tr -d '\r')
           echo ">>> 目标机型：$DEV"
+          # openwrt-25.12 分支的 feeds/luci 里同时有 luci-app-opkg 与
+          # luci-app-package-manager（PKG_PROVIDES:=luci-app-opkg），两者撞同一个
+          # kconfig 符号；符号被合并后 luci 集合（依赖 package-manager）解析为不可选，
+          # 连带 luci-light / uhttpd / luci-mod-* 全被 defconfig 压成 n —— 表现就是
+          # 「LuCI 主集合未选中」（master 分支已删掉 luci-app-opkg 目录，没这个问题）。
+          # 删掉重复的那份（功能由 package-manager 提供），再重建包元数据。
+          rm -rf package/feeds/luci/luci-app-opkg feeds/luci/applications/luci-app-opkg
+          rm -f tmp/.config-package.in tmp/.packageinfo
 
           echo 'CONFIG_IMAGEOPT=y' >> .config
           echo 'CONFIG_VERSIONOPT=y' >> .config
