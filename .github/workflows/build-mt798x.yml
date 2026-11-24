@@ -1,6 +1,7 @@
-# 多机型编译：SL-3000 / SL-3000 eMMC、Ruijie RG-X30E、Ruijie RG-X30E Pro、Ruijie RG-X60 New、Globitel BT-R320、Ruijie RG-BE72 Pro (U-Boot mod)
+# Globitel BT-R320 专项构建（锐捷 5 机型已迁移到 .github/workflows/ruijie-5in1.yml）
+# 本文件只保留 BT-R320，避免与 5 合 1 流程重复构建同一批机型、重复发 Release
 # 手动触发（workflow_dispatch）；每个机型每周一个 Release，tag = immortalwrt-<机型>-<年-W周>
-name: Build ImmortalWrt MT798x
+name: Build ImmortalWrt BT-R320
 
 on:
   workflow_dispatch:
@@ -8,7 +9,7 @@ on:
       slug:
         description: '机型（all = 全部）'
         required: false
-        default: 'all'
+        default: 'btr320'
 
 permissions:
   contents: write
@@ -25,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slug: [sl3000, rgx30e, x30epro, x60new, btr320, be72pro]
+        slug: [btr320]
     steps:
       - name: 检出构建仓库
         uses: actions/checkout@v4
@@ -181,7 +182,7 @@ jobs:
       - name: 计算发布标签（每机型每周一个 Release）
         if: steps.pick.outputs.selected != 'false' && success()
         id: rel
-        run: echo "tag=immortalwrt-${{ matrix.slug }}-$(TZ=Asia/Shanghai date +%G-W%V)" >> "$GITHUB_OUTPUT"
+        run: echo "tag=immortalwrt-25.12-$(TZ=Asia/Shanghai date +%Y%m%d)-btr320" >> "$GITHUB_OUTPUT"
 
       - name: 发布 Release
         if: steps.pick.outputs.selected != 'false' && success()
@@ -191,7 +192,7 @@ jobs:
           name: ImmortalWrt ${{ matrix.slug }} · ${{ steps.rel.outputs.tag }}
           body: |
             自动构建：ImmortalWrt / ${{ matrix.slug }}
-            - 定时：每天 09:00（北京时间）
+            - 手动触发；锐捷 5 机型改由 ruijie-5in1.yml 每周一 08:30 构建
             - 主题：luci-theme-argon（feeds 自带）+ iStore 中文界面
             - 内置：iStore 软件中心 + 简体中文语言包
             - 无线：CN 国码 + 5G HE160 / 2.4G HE40 + 802.11k/v/r

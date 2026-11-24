@@ -1,0 +1,487 @@
+# ImmortalWrt 锐捷 5 机型定时构建（EW-6000GX PRO / RG-X60 New / RG-X30E Pro / RG-X30E / RG-BE72 Pro）
+#
+# 本文件在 tvliving/lede、tvliving/Kwrt、tvliving/immortalwrt-mt798x-action、
+# s9xxx/immortalwrt-mt798x-6.6 四仓库保持同一套逻辑，只有主题/首页/发行名不同：
+#   源码底座：上游 openwrt-25.12 + 本仓库 devices-pack/<slug>
+#   网口映射：devices-pack/<slug>/files/etc/board.d（按机型硬断言 LAN/WAN）
+#   无线    ：首启 97-ruijie-wifi 按 band 生成双频 AP，随后 99-wifi-boost 做增强
+#   界面    ：argon 主题 + iStore 市场 + 强制简体中文 + 标准 LuCI 首页（状态-概览）
+#
+# 发布：tag = immortalwrt-25.12-<北京日期>（例 immortalwrt-25.12-20261124），
+#      一次构建只发一个 Release，不再出现 openwrt-* 与 immortalwrt-* 两份。
+name: ImmortalWrt 锐捷 5 机型 · 定时构建
+
+on:
+  schedule:
+    # 北京时间每周一 08:30 = UTC 00:30
+    - cron: '30 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+      slug:
+        description: '只构建某个机型（all = 全部）'
+        type: choice
+        default: 'all'
+        options: ['all', 'ew6000gx', 'x60new', 'x30epro', 'rgx30e', 'be72pro']
+  push:
+    branches: [openwrt-24.10-6.6]
+    paths:
+      - '.github/workflows/ruijie-5in1.yml'
+      - '.github/scripts/ruijie-5in1-inject.sh'
+      - 'scripts/apply-pack.py'
+      - 'scripts/customize.sh'
+      - 'devices-pack/**'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ruijie-5in1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  DIST: 'ImmortalWrt'
+  PREFIX: 'immortalwrt'
+  VERSION: '25.12'
+  THEME: 'argon'
+  HOME_APP: 'standard'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1500M
+  CCACHE_COMPRESS: 'true'
+  CCACHE_NOHASHDIR: 'true'
+
+jobs:
+  build:
+    name: 🏗️ ${{ matrix.title }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - slug: ew6000gx
+            title: EW-6000GX PRO (MT7986A)
+          - slug: x60new
+            title: RG-X60 New (MT7986A)
+          - slug: x30epro
+            title: RG-X30E Pro (MT7981B)
+          - slug: rgx30e
+            title: RG-X30E (MT7981B)
+          - slug: be72pro
+            title: RG-BE72 Pro (MT7988D)
+    steps:
+      - name: 是否跳过（手动指定其它机型时）
+        id: pick
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.slug != 'all' && github.event.inputs.slug != matrix.slug }}
+        run: echo "selected=false" >> "$GITHUB_OUTPUT"
+
+      - name: 检出构建仓库
+        if: steps.pick.outputs.selected != 'false'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 释放磁盘空间并加大 swap
+        if: steps.pick.outputs.selected != 'false'
+        run: |
+          echo "===== 释放前 ====="
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo pkill -9 -f dockerd 2>/dev/null || true
+          sudo pkill -9 -f containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /snap /var/lib/snapd 2>/dev/null || true
+          sudo journalctl --vacuum-size=32M 2>/dev/null || true
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile /mnt/swapfile 2>/dev/null || true
+          if sudo fallocate -l 4G /swapfile 2>/dev/null; then
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile && echo ">>> swap 4G 已启用"
+          else
+            echo "::warning::swap 创建失败，继续"
+          fi
+          echo "===== 释放后 ====="
+          df -h / | tail -1
+          free -h
+
+      - name: 安装编译依赖
+        if: steps.pick.outputs.selected != 'false'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq -o Acquire::Retries=3 || sudo -E apt-get update -qq
+          for i in 1 2 3; do
+            if timeout 1500 sudo -E apt-get install -y --no-install-recommends \
+              build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+              gettext git libncurses5-dev libssl-dev libelf-dev python3-setuptools \
+              rsync swig unzip zlib1g-dev file wget dwarves llvm python3-pyelftools \
+              libpython3-dev aria2 jq ccache rename device-tree-compiler \
+              libgmp3-dev libmpc-dev pahole libdw-dev zstd \
+              autoconf automake autopoint binutils bzip2 cpio curl genisoimage \
+              gperf haveged help2man intltool libc6-dev-i386 libfuse-dev \
+              libglib2.0-dev libltdl-dev libmpfr-dev libncurses-dev \
+              libncursesw5-dev libreadline-dev libtool libxslt1-dev lrzsz msmtp \
+              ninja-build p7zip p7zip-full patch pkgconf python3-ply python3-docutils \
+              python3-pyelftools qemu-utils scons squashfs-tools subversion texinfo \
+              uglifyjs upx-ucl vim xxd; then
+              echo ">>> 依赖安装完成"
+              break
+            fi
+            echo ">>> 第 $i 次安装失败，30 秒后重试"
+            sleep 30
+          done
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          ccache --version | head -1 || echo "::warning::ccache 不可用"
+
+      - name: 准备源码树（上游 openwrt-25.12）
+        if: steps.pick.outputs.selected != 'false'
+        run: |
+          rm -rf openwrt .owrt-src
+          for i in 1 2 3; do
+            git clone -q --depth 1 -b openwrt-25.12 https://github.com/openwrt/openwrt .owrt-src && break
+            echo "::warning::clone 第 $i 次失败，重试"
+            rm -rf .owrt-src
+            sleep 10
+          done
+          [ -d .owrt-src ] || { echo "::error::上游源码克隆失败"; exit 1; }
+          mv .owrt-src openwrt
+          echo ">>> 源码树就绪：$(cd openwrt && git rev-parse --short HEAD)"
+
+      - name: 恢复 ccache
+        if: steps.pick.outputs.selected != 'false'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-ruijie5-${{ matrix.slug }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-ruijie5-${{ matrix.slug }}-
+            ccache-ruijie5-
+
+      - name: 注入设备包（网口 / 无线 / DTS 硬断言）
+        if: steps.pick.outputs.selected != 'false'
+        env:
+          SLUG: ${{ matrix.slug }}
+          SOURCE_ROOT: openwrt
+        run: bash .github/scripts/ruijie-5in1-inject.sh
+
+      - name: 生成基础 .config
+        if: steps.pick.outputs.selected != 'false'
+        run: |
+          set -euo pipefail
+          cd openwrt
+          {
+            echo 'CONFIG_TARGET_mediatek=y'
+            echo 'CONFIG_TARGET_mediatek_filogic=y'
+            echo 'CONFIG_TARGET_MULTI_PROFILE=y'
+            echo 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y'
+            echo 'CONFIG_DEVEL=y'
+            echo 'CONFIG_CCACHE=y'
+            cat ../devices-pack/"$SLUG"/config.fragment
+          } > .config
+          echo "---- 基础配置 ----"
+          cat .config
+
+      - name: 主题 / iStore / 中文 / 首页（仓库统一脚本）
+        if: steps.pick.outputs.selected != 'false'
+        run: bash scripts/customize.sh openwrt
+
+      - name: 收敛到单一机型 + 校验（主题 / 商店 / 中文 / WiFi）
+        if: steps.pick.outputs.selected != 'false'
+        run: |
+          set -euo pipefail
+          cd openwrt
+          DEV=$(sed -n 's/^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_\(.*\)=y$/\1/p' ../devices-pack/"$SLUG"/config.fragment | head -1 | tr -d '\r')
+          echo ">>> 目标机型：$DEV"
+
+          echo 'CONFIG_IMAGEOPT=y' >> .config
+          echo 'CONFIG_VERSIONOPT=y' >> .config
+          make defconfig
+
+          # 只保留本机型：MULTI_PROFILE 下 defconfig 会把同 subtarget 的所有机型一起打开
+          python3 - "$DEV" <<'PY'
+          import sys
+          keep = 'CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_' + sys.argv[1]
+          off, out = [], []
+          for line in open('.config', encoding='utf-8', errors='surrogateescape'):
+              name = line.split('=')[0].replace('# ', '').split(' ')[0]
+              if name.startswith('CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_') and name != keep:
+                  off.append(name)
+                  continue
+              out.append(line)
+          for n in dict.fromkeys(off):
+              out.append('# %s is not set\n' % n)
+          out.append('%s=y\n' % keep)
+          open('.config', 'w', encoding='utf-8', errors='surrogateescape').writelines(out)
+          print('已关闭非目标机型：%d 个' % len(off))
+          PY
+          echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
+          make defconfig
+
+          # 发行名以仓库为准：image-config.in 的默认值决定 /etc/openwrt_release 与产物名，
+          # 只改 .config 会被下一次 defconfig 重置。
+          if [ -f package/base-files/image-config.in ]; then
+            sed -i "s/^\(\s*\)default \"OpenWrt\"$/\1default \"$DIST\"/" package/base-files/image-config.in
+          fi
+          sed -i '/^CONFIG_VERSION_DIST=/d' .config
+          echo "CONFIG_VERSION_DIST=\"$DIST\"" >> .config
+
+          # 关闭 BTF（规避 tools/dwarves 构建失败）
+          if grep -q '^CONFIG_KERNEL_DEBUG_INFO_BTF=y$' .config; then
+            sed -i 's/^CONFIG_KERNEL_DEBUG_INFO_BTF=y/# CONFIG_KERNEL_DEBUG_INFO_BTF is not set/' .config
+          fi
+          make defconfig
+          sed -i '/^CONFIG_VERSION_DIST=/d' .config
+          echo "CONFIG_VERSION_DIST=\"$DIST\"" >> .config
+
+          echo "===== 校验 ====="
+          grep -q '^CONFIG_TARGET_mediatek=y$' .config || { echo "::error::target 未选中"; exit 1; }
+          grep -q '^CONFIG_TARGET_mediatek_filogic=y$' .config || { echo "::error::subtarget 未选中"; exit 1; }
+          grep -q "^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${DEV}=y$" .config \
+            || { echo "::error::机型 ${DEV} 未生效"; exit 1; }
+          n_dev=$(grep -cE '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || true)
+          [ "${n_dev:-0}" -eq 1 ] || { echo "::error::启用机型应为 1，实际 ${n_dev}"; exit 1; }
+          grep -q "^CONFIG_VERSION_DIST=\"$DIST\"$" .config || { echo "::error::发行名 $DIST 未生效"; exit 1; }
+
+          grep -q "^CONFIG_PACKAGE_luci-theme-${THEME}=y$" .config || { echo "::error::主题 ${THEME} 未生效"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config || { echo "::error::iStore 市场未生效"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config || { echo "::error::中文基础包未生效"; exit 1; }
+          grep -q '^CONFIG_LUCI_LANG_zh_Hans=y$' .config || { echo "::error::中文开关未开启"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci=y$' .config || { echo "::error::LuCI 主集合未选中"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_uhttpd=y$' .config || { echo "::error::uhttpd 未选中"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_dropbear=y$' .config || { echo "::error::dropbear 未选中，SSH 不可用"; exit 1; }
+          grep -qE '^CONFIG_PACKAGE_(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad)=y$' .config \
+            || { echo "::error::wpad 未选中，无线无法起 AP"; exit 1; }
+          # 首页：标准 LuCI（状态-概览），不引入 quickstart（XHR 失败会白屏且丢侧边栏）
+          if grep -q '^CONFIG_PACKAGE_luci-app-quickstart=y$' .config; then
+            echo "::error::本仓库首页应为标准 LuCI，不应引入 quickstart"; exit 1
+          fi
+
+          # WiFi 驱动/固件必须真的进 .config（设备块里写了也会被 kconfig 丢掉）
+          if [ "$SLUG" = "be72pro" ]; then
+            for k in kmod-mt7992-firmware kmod-mt7992-23-firmware mt7988-wo-firmware; do
+              grep -q "^CONFIG_PACKAGE_${k}=y$" .config || { echo "::error::WiFi 包未生效: $k"; exit 1; }
+            done
+          else
+            grep -q '^CONFIG_PACKAGE_kmod-mt7915e=y$' .config || { echo "::error::kmod-mt7915e 未生效"; exit 1; }
+            if [ "$SLUG" = "x30epro" ] || [ "$SLUG" = "rgx30e" ]; then
+              for k in kmod-mt7981-firmware mt7981-wo-firmware; do
+                grep -q "^CONFIG_PACKAGE_${k}=y$" .config || { echo "::error::WiFi 包未生效: $k"; exit 1; }
+              done
+            else
+              for k in kmod-mt7986-firmware mt7986-wo-firmware; do
+                grep -q "^CONFIG_PACKAGE_${k}=y$" .config || { echo "::error::WiFi 包未生效: $k"; exit 1; }
+              done
+            fi
+          fi
+
+          # 无线配置与增强脚本
+          test -x files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::缺 97-ruijie-wifi"; exit 1; }
+          grep -q 'HE160' files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::无线脚本缺 HE160"; exit 1; }
+          if [ -f files/etc/uci-defaults/99-wifi-boost ]; then
+            grep -q "country='CN'" files/etc/uci-defaults/99-wifi-boost || { echo "::error::99-wifi-boost 缺 CN 国码"; exit 1; }
+            grep -q 'HE160' files/etc/uci-defaults/99-wifi-boost || { echo "::error::99-wifi-boost 缺 HE160"; exit 1; }
+          else
+            echo "::warning::本仓库 customize.sh 未生成 99-wifi-boost（97-ruijie-wifi 已覆盖基础增强）"
+          fi
+          echo "机型 $DEV / 主题 $THEME / iStore + 中文 / 双频无线首启启用"
+
+      - name: 下载源码包
+        if: steps.pick.outputs.selected != 'false'
+        run: |
+          cd openwrt
+          for i in 1 2 3; do
+            if make -j8 download < /dev/null; then
+              echo ">>> 下载完成"
+              break
+            fi
+            echo ">>> 第 $i 次下载有失败项，重试"
+            sleep 15
+          done
+          make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 编译固件
+        if: steps.pick.outputs.selected != 'false'
+        run: |
+          cd openwrt
+          export CCACHE_DIR CCACHE_MAXSIZE CCACHE_COMPRESS CCACHE_NOHASHDIR
+          mkdir -p "$CCACHE_DIR"
+          ccache -s 2>/dev/null || true
+          set -o pipefail
+          if make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo ">>> ✅ 编译成功"
+          else
+            echo "::warning::并行编译失败，单线程复现真实错误"
+            fail="$(grep -o 'ERROR: [^ ]* failed to build' build.log | head -1 | awk '{print $2}')"
+            echo "== 失败包: ${fail:-未识别}"
+            if [ -n "$fail" ]; then
+              make -j1 V=s "$fail/compile" 2>&1 | tail -150 || true
+            else
+              make -j1 V=s 2>&1 | tail -150 || true
+            fi
+            exit 1
+          fi
+          ccache -s 2>/dev/null || true
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.slug }}
+          path: |
+            openwrt/build.log
+            openwrt/.config
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 收集本机型产物
+        if: steps.pick.outputs.selected != 'false' && success()
+        run: |
+          set -euo pipefail
+          DEV=$(sed -n 's/^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_\(.*\)=y$/\1/p' devices-pack/"$SLUG"/config.fragment | head -1 | tr -d '\r')
+          B=openwrt/bin/targets/mediatek/filogic
+          mkdir -p out
+          shopt -s nullglob
+          for f in "$B"/*"$DEV"*; do
+            case "$f" in
+              *.json|*.buildinfo|*.manifest|*sysupgrade*) cp -f "$f" out/ ;;
+            esac
+          done
+          # 产物名统一以仓库名开头：VERSION_DIST 会被 defconfig 吃掉，这里兜底改名
+          for f in out/*; do
+            [ -e "$f" ] || continue
+            b=$(basename "$f")
+            case "$b" in
+              "$PREFIX"-*) : ;;
+              openwrt-*) mv -f "$f" "out/${PREFIX}-${b#openwrt-}" ;;
+              mediatek-*) mv -f "$f" "out/${PREFIX}-${b}" ;;
+            esac
+          done
+          # 同一镜像可能同时存在 openwrt- 前缀与发行版前缀两份，只留发行版那份
+          for f in out/*; do
+            [ -e "$f" ] || continue
+            b=$(basename "$f")
+            case "$b" in
+              openwrt-*)
+                base=${b#openwrt-}
+                if [ -e "out/${PREFIX}-$base" ]; then rm -f "$f"; fi
+                ;;
+            esac
+          done
+
+          sysup=( out/*"$DEV"*sysupgrade* )
+          [ "${#sysup[@]}" -ge 1 ] || { echo "::error::$DEV 缺 sysupgrade 产物"; ls -lh "$B" out || true; exit 1; }
+          # 这 5 台都是多分区 U-Boot，只发 sysupgrade，出现 factory 一律失败
+          if ls out | grep -qi factory; then
+            echo "::error::多分区 U-Boot 机型不应有 factory 产物"; ls out; exit 1
+          fi
+          if ls out/ | grep -qiE 'preloader|bl31|\.fip$|gpt|recovery'; then
+            echo "::error::产物里出现引导工件，拒绝发布"; ls out; exit 1
+          fi
+          ls out | grep -q "^${PREFIX}-" || { echo "::error::产物名不是 ${PREFIX}- 前缀"; ls out; exit 1; }
+          ( cd out && sha256sum ./* > sha256sums.txt ) 2>/dev/null || true
+          echo "===== ${{ matrix.title }} ====="
+          ls -lh out
+          {
+            echo "## 🏗️ ${{ matrix.title }} 编译完成"
+            echo ""
+            echo "| 文件 | 大小 |"
+            echo "|---|---|"
+            ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传本机型产物
+        if: steps.pick.outputs.selected != 'false' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-${{ matrix.slug }}
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: 📦 发布 immortalwrt-25.12-日期
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.make_release) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 下载全部机型产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: images-*
+          path: rel
+          merge-multiple: true
+
+      - name: 生成校验文件
+        run: |
+          cd rel
+          ls -lh
+          sha256sum ./* > sha256sums.txt
+
+      - name: 创建 Release（immortalwrt-<大版本>-<北京日期>）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          DATE=$(TZ=Asia/Shanghai date +%Y%m%d)
+          TAG="${PREFIX}-${VERSION}-${DATE}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            TAG="${TAG}-r${GITHUB_RUN_NUMBER}"
+          fi
+          cat > notes.md <<'EOF'
+          ImmortalWrt 25.12 · 锐捷 5 机型自动编译（s9xxx/immortalwrt-mt798x-6.6）
+
+          | 机型 | 平台 | 网口 |
+          |---|---|---|
+          | EW-6000GX PRO | MT7986A | lan1-4 + eth1（2.5G Airoha EN8811H）作 WAN |
+          | RG-X60 New | MT7986A | lan1-3 + eth1 作 WAN |
+          | RG-X30E Pro | MT7981B | wan + lan1-3 |
+          | RG-X30E | MT7981B | wan + lan1-3 |
+          | RG-BE72 Pro | MT7988D | lan1-4 + eth1/eth2.2 作 LAN，eth2.1 作 WAN |
+
+          共同项：
+          - 产物：每台仅 squashfs sysupgrade；不含 factory / preloader / fip / gpt（均为多分区 U-Boot）
+          - 文件名统一 `immortalwrt-...`，不再产出 openwrt-* 副本
+          - 界面：argon 主题 + iStore 市场 + 全量简体中文 + 强制 zh_cn + 标准 LuCI 首页（状态-概览）
+          - 无线：首启 97-ruijie-wifi 生成双频 AP（CN / 5G HE160 / 2.4G HE40），
+            随后 99-wifi-boost 做 802.11k/v/r + beamformee 增强
+          - 默认 IP: 192.168.1.1 / root / 无密码（刷完请立即改）
+          - 定时：每周一 08:30（北京时间）
+          - 构建记录: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ### 注意
+
+          1. 5 台都是多分区 U-Boot，只提供 sysupgrade 包；首次刷入前请备份原厂分区，
+             BE72 Pro 需先刷对应 U-Boot mod 布局。
+          2. EW-6000GX PRO / X60 New 的 2.5G WAN 走 gmac1(eth1)，LAN 走 MT7531。
+          3. 无线默认开放，刷入后请立即设置密码。
+          EOF
+          for i in 1 2 3 4 5; do
+            echo ">>> 第 $i 次上传"
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              gh release create "$TAG" --title "ImmortalWrt 25.12 · 锐捷 5 机型 · ${DATE}" --notes-file notes.md || true
+            fi
+            if gh release upload "$TAG" rel/* --clobber; then
+              echo ">>> 上传成功（第 $i 次）"
+              exit 0
+            fi
+            echo ">>> 第 $i 次失败，$((i * 30)) 秒后重试"
+            sleep $((i * 30))
+          done
+          echo "::error::Release 上传失败，产物已保留在 Actions artifacts"
+          exit 1
