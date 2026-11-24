@@ -164,6 +164,7 @@ jobs:
           echo ">>> 源码树就绪：$(cd openwrt && git rev-parse --short HEAD)"
 
       - name: 修补上游 libsepol（25.12 的 3.9 不安装头文件，staging 必失败）
+        if: steps.pick.outputs.selected != 'false'
         run: |
           set -euo pipefail
           cd openwrt
@@ -316,6 +317,15 @@ jobs:
           grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config || { echo "::error::iStore 市场未生效"; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config || { echo "::error::中文基础包未生效"; exit 1; }
           grep -q '^CONFIG_LUCI_LANG_zh_Hans=y$' .config || { echo "::error::中文开关未开启"; exit 1; }
+          if ! grep -q '^CONFIG_PACKAGE_luci=y$' .config; then
+            echo "::warning::luci 集合未选中，打印依赖诊断并尝试修复"
+            grep -nE '^#? ?CONFIG_PACKAGE_(luci|luci-light|luci-app-package-manager)=' .config | head -10 || true
+            ./scripts/feeds install -a -p luci || true
+            rm -f tmp/.config-package.in
+            echo 'CONFIG_PACKAGE_luci=y' >> .config
+            make defconfig || true
+            grep -n -A8 'config PACKAGE_luci$' tmp/.config-package.in | head -24 || true
+          fi
           grep -q '^CONFIG_PACKAGE_luci=y$' .config || { echo "::error::LuCI 主集合未选中"; exit 1; }
           grep -q '^CONFIG_PACKAGE_uhttpd=y$' .config || { echo "::error::uhttpd 未选中"; exit 1; }
           grep -q '^CONFIG_PACKAGE_dropbear=y$' .config || { echo "::error::dropbear 未选中，SSH 不可用"; exit 1; }
