@@ -196,7 +196,8 @@ jobs:
             # iStore 依赖：只写 luci-app-store 时，缺 TAR_XZ / lua 运行时 / taskd 会被 kconfig
             # 整包丢掉（6.6 仓库的 customize.sh 就缺这一段，导致“iStore 市场未生效”）
             for p in luci-app-store luci-lib-taskd luci-lib-xterm taskd \
-                     libuci-lua curl tar mount-utils xz-utils luci-compat luci-lua-runtime; do
+                     libuci-lua curl tar mount-utils xz-utils xz liblzma \
+                     luci-compat luci-lua-runtime; do
               echo "CONFIG_PACKAGE_${p}=y"
             done
             # luci-app-store 声明 `depends on !(PACKAGE_TAR_XZ) || PACKAGE_xz-utils`。
@@ -277,7 +278,7 @@ jobs:
             ./scripts/feeds install -f -p istore luci-app-store || true
             ./scripts/feeds install -f -p istore luci-lib-taskd || true
             ./scripts/feeds install -f -p istore taskd || true
-            echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
+            printf 'CONFIG_PACKAGE_xz-utils=y\nCONFIG_PACKAGE_xz=y\nCONFIG_PACKAGE_liblzma=y\nCONFIG_PACKAGE_luci-lua-runtime=y\n# CONFIG_PACKAGE_TAR_XZ is not set\nCONFIG_PACKAGE_luci-app-store=y\n' >> .config
             make defconfig
             grep -n 'luci-app-store' .config | head -5 || true
           fi
