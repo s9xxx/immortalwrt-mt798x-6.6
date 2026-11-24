@@ -230,7 +230,8 @@ cmd_wifi() {
 #!/bin/sh
 # 无线首启增强（全机型通用，按 band 自动判断，不要手改各机型分支）：
 #   - 国码 CN + 802.11d 国码广播（部分驱动据此放开功率上限）
-#   - 5G/6G 开 160MHz（HE160）；2.4G 最高 HE40 —— 给 2.4G 强塞 HE160 会让 radio 起不来
+#   - 5G 固定 36 信道 + HE80（CN 下 HE160 必须占 36-64 含 DFS，不开 DFS 时 radio 起不来）
+#   - 6G 开 160MHz（HE160）；2.4G 最高 HE40 —— 给 2.4G 强塞 HE160 会让 radio 起不来
 #   - 802.11k/v/r 快速漫游、HE SU beamformee、关掉 disassoc_low_ack 的伪断连
 [ -f /etc/config/wireless ] || exit 0
 
@@ -246,7 +247,15 @@ for r in $(uci -q show wireless | sed -n 's/^wireless\.\(radio[0-9]\+\)=.*/\1/p'
   uci -q set wireless.$r.country='CN'
   uci -q set wireless.$r.ieee80211d='1'
   case "$band" in
-    5g|6g)
+    5g)
+      # CN 法规下 5G 的 160MHz 只能落在 36-64（含 DFS 52-64）。不开 DFS 时 hostapd
+      # 找不到合法 160MHz 信道，radio 直接起不来（现象：2.4G 正常、5G 打不开）。
+      # 默认固定 36 信道 + HE80；想上 160 再在 LuCI 里自行开 DFS。
+      uci -q set wireless.$r.channel='36'
+      uci -q set wireless.$r.htmode='HE80'
+      uci -q set wireless.$r.ieee80211h='0'
+      ;;
+    6g)
       uci -q set wireless.$r.channel='auto'
       uci -q set wireless.$r.htmode='HE160'
       ;;
@@ -269,7 +278,7 @@ uci -q commit wireless
 exit 0
 SH
   chmod +x files/etc/uci-defaults/99-wifi-boost
-  log "已写入 99-wifi-boost（国码 CN + 5G 160MHz + 802.11k/v/r + beamformee）"
+  log "已写入 99-wifi-boost（国码 CN + 5G HE80@ch36 + 802.11k/v/r + beamformee）"
 }
 
 cmd_uci_defaults() {

@@ -328,10 +328,12 @@ jobs:
 
           # 无线配置与增强脚本
           test -x files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::缺 97-ruijie-wifi"; exit 1; }
-          grep -q 'HE160' files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::无线脚本缺 HE160"; exit 1; }
+          grep -q 'htmode=HE80' files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::无线脚本 5G 未用 HE80（CN 下 HE160 起不来）"; exit 1; }
+          grep -q 'channel=36' files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::无线脚本 5G 未固定 36 信道"; exit 1; }
+          test -x files/etc/uci-defaults/98-ruijie-wifi-5g || { echo "::error::缺 98-ruijie-wifi-5g（升级保留配置时 5G 不会被修正）"; exit 1; }
           if [ -f files/etc/uci-defaults/99-wifi-boost ]; then
             grep -q "country='CN'" files/etc/uci-defaults/99-wifi-boost || { echo "::error::99-wifi-boost 缺 CN 国码"; exit 1; }
-            grep -q 'HE160' files/etc/uci-defaults/99-wifi-boost || { echo "::error::99-wifi-boost 缺 HE160"; exit 1; }
+            grep -q 'HE80' files/etc/uci-defaults/99-wifi-boost || { echo "::error::99-wifi-boost 5G 未用 HE80"; exit 1; }
           else
             echo "::warning::本仓库 customize.sh 未生成 99-wifi-boost（97-ruijie-wifi 已覆盖基础增强）"
           fi
@@ -518,7 +520,7 @@ jobs:
           - 产物：每台仅 squashfs sysupgrade；不含 factory / preloader / fip / gpt（均为多分区 U-Boot）
           - 文件名统一 `immortalwrt-...`，不再产出 openwrt-* 副本
           - 界面：argon 主题 + iStore 市场 + 全量简体中文 + 强制 zh_cn + 标准 LuCI 首页（状态-概览）
-          - 无线：首启 97-ruijie-wifi 生成双频 AP（CN / 5G HE160 / 2.4G HE40），
+          - 无线：首启 97-ruijie-wifi 生成双频 AP（CN / 5G HE80@ch36 / 2.4G HE40），
             随后 99-wifi-boost 做 802.11k/v/r + beamformee 增强
           - 默认 IP: 192.168.1.1 / root / 无密码（刷完请立即改）
           - 定时：每周一 08:30（北京时间）

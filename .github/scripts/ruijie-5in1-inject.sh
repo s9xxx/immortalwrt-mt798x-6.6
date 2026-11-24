@@ -152,8 +152,22 @@ uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p' | whil
 	uci -q set "wireless.$r.ieee80211d=1"
 	uci -q set "wireless.$r.cell_density=0"
 	case "$band" in
-		2g) uci -q set "wireless.$r.htmode=HE40" ;;
-		*)  uci -q set "wireless.$r.channel=auto"; uci -q set "wireless.$r.htmode=HE160" ;;
+	5g)
+		# CN 法规下 5G 的 160MHz 只能落在 36-64（含 DFS 52-64）。不开 DFS 时
+		# hostapd 找不到可用 160MHz 信道会直接启动失败 —— 表现就是
+		# “2.4G 正常、5G 打不开”。这里固定 36 信道 + HE80，保证 5G 能起来。
+		uci -q set "wireless.$r.channel=36"
+		uci -q set "wireless.$r.htmode=HE80"
+		uci -q set "wireless.$r.ieee80211h=0"
+		;;
+	6g)
+		uci -q set "wireless.$r.channel=auto"
+		uci -q set "wireless.$r.htmode=HE160"
+		;;
+	*)
+		uci -q set "wireless.$r.channel=auto"
+		uci -q set "wireless.$r.htmode=HE40"
+		;;
 	esac
 	uci -q commit wireless
 
@@ -185,6 +199,25 @@ EOS
 sed -i "s/@SSID@/$SSID_BASE/" "$SRC/files/etc/uci-defaults/97-ruijie-wifi"
 chmod 755 "$SRC/files/etc/uci-defaults/97-ruijie-wifi"
 echo ">>> 首启无线脚本就绪：97-ruijie-wifi（SSID 前缀 $SSID_BASE）"
+
+# 5G 修复：老配置里 5g 是 HE160+auto（CN 下没有合法 160MHz 信道），升级保留配置
+# 时 97 号脚本不会再跑，所以单独放一个 98 号，保证刷完新固件后 5G 也能起来。
+cat > "$SRC/files/etc/uci-defaults/98-ruijie-wifi-5g" <<'EOS'
+#!/bin/sh
+# 把 5G 从 HE160/channel=auto 修正为 36 信道 + HE80（幂等）
+[ -f /etc/config/wireless ] || exit 0
+for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+	[ "$(uci -q get "wireless.$r.band")" = "5g" ] || continue
+	uci -q set "wireless.$r.channel=36"
+	uci -q set "wireless.$r.htmode=HE80"
+	uci -q set "wireless.$r.ieee80211h=0"
+	uci -q set "wireless.$r.disabled=0"
+done
+uci -q commit wireless
+exit 0
+EOS
+chmod 755 "$SRC/files/etc/uci-defaults/98-ruijie-wifi-5g"
+echo ">>> 5G 修正脚本就绪：98-ruijie-wifi-5g"
 
 # ---------------------------------------------------------------------------
 # 4) 硬断言：网口映射 / 设备块 / DTS / 无线配置
@@ -259,7 +292,11 @@ PY
 
 WIFI_SH="$SRC/files/etc/uci-defaults/97-ruijie-wifi"
 [ -x "$WIFI_SH" ] || { echo "::error::97-ruijie-wifi 不存在或不可执行"; exit 1; }
-grep -q 'HE160' "$WIFI_SH" || { echo "::error::无线脚本缺 HE160"; exit 1; }
+grep -q 'htmode=HE80' "$WIFI_SH" || { echo "::error::无线脚本 5G 未使用 HE80（HE160 在 CN 下起不来）"; exit 1; }
+grep -q 'channel=36' "$WIFI_SH" || { echo "::error::无线脚本 5G 未固定 36 信道"; exit 1; }
+FIX5G="$SRC/files/etc/uci-defaults/98-ruijie-wifi-5g"
+[ -x "$FIX5G" ] || { echo "::error::缺少 98-ruijie-wifi-5g（升级场景 5G 不会被修正）"; exit 1; }
+grep -q 'htmode=HE80' "$FIX5G" || { echo "::error::98 号脚本未修正 htmode"; exit 1; }
 grep -q 'country=CN' "$WIFI_SH" || { echo "::error::无线脚本缺 CN 国码"; exit 1; }
 grep -q "SSID_BASE='$SSID_BASE'" "$WIFI_SH" || { echo "::error::无线脚本 SSID 前缀不对"; exit 1; }
 echo "✔ 无线脚本断言通过"
