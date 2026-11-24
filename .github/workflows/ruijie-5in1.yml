@@ -278,23 +278,25 @@ jobs:
             echo "::error::本仓库首页应为标准 LuCI，不应引入 quickstart"; exit 1
           fi
 
-          # WiFi 驱动/固件必须真的进 .config（设备块里写了也会被 kconfig 丢掉）
+          # WiFi 驱动/固件：MULTI_PROFILE + PER_DEVICE_ROOTFS 下 DEVICE_PACKAGES 是在镜像阶段
+          # 装进 per-device rootfs 的，不一定出现在 .config（lede run 的 “kmod-mt7915e 未生效”
+          # 就是误判）。这里只做提示，真正的硬校验放在产物 manifest 上。
           if [ "$SLUG" = "be72pro" ]; then
-            for k in kmod-mt7992-firmware kmod-mt7992-23-firmware mt7988-wo-firmware; do
-              grep -q "^CONFIG_PACKAGE_${k}=y$" .config || { echo "::error::WiFi 包未生效: $k"; exit 1; }
-            done
+            WIFI_PKGS="kmod-mt7992-firmware kmod-mt7992-23-firmware mt7988-wo-firmware"
+          elif [ "$SLUG" = "x30epro" ] || [ "$SLUG" = "rgx30e" ]; then
+            WIFI_PKGS="kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware"
           else
-            grep -q '^CONFIG_PACKAGE_kmod-mt7915e=y$' .config || { echo "::error::kmod-mt7915e 未生效"; exit 1; }
-            if [ "$SLUG" = "x30epro" ] || [ "$SLUG" = "rgx30e" ]; then
-              for k in kmod-mt7981-firmware mt7981-wo-firmware; do
-                grep -q "^CONFIG_PACKAGE_${k}=y$" .config || { echo "::error::WiFi 包未生效: $k"; exit 1; }
-              done
-            else
-              for k in kmod-mt7986-firmware mt7986-wo-firmware; do
-                grep -q "^CONFIG_PACKAGE_${k}=y$" .config || { echo "::error::WiFi 包未生效: $k"; exit 1; }
-              done
-            fi
+            WIFI_PKGS="kmod-mt7915e kmod-mt7986-firmware mt7986-wo-firmware"
           fi
+          for k in $WIFI_PKGS; do
+            if grep -q "^CONFIG_PACKAGE_${k}=y$" .config; then
+              echo "  [ok] .config 选中 $k"
+            else
+              echo "  [info] $k 未出现在 .config（预期由 DEVICE_PACKAGES 在镜像阶段安装，稍后用 manifest 校验）"
+            fi
+          done
+          # 后续「收集产物」步骤要用同一份清单做 manifest 校验
+          echo "WIFI_PKGS=$WIFI_PKGS" >> "$GITHUB_ENV"
 
           # 无线配置与增强脚本
           test -x files/etc/uci-defaults/97-ruijie-wifi || { echo "::error::缺 97-ruijie-wifi"; exit 1; }
@@ -401,6 +403,28 @@ jobs:
             echo "::error::产物里出现引导工件，拒绝发布"; ls out; exit 1
           fi
           ls out | grep -q "^${PREFIX}-" || { echo "::error::产物名不是 ${PREFIX}- 前缀"; ls out; exit 1; }
+
+          # 用镜像 manifest 做端到端校验：无线驱动、主题、iStore、中文必须在最终 rootfs 里
+          MAN=$(ls out/*.manifest 2>/dev/null | head -1)
+          [ -n "$MAN" ] || { echo "::error::缺 manifest，无法校验包清单"; ls out; exit 1; }
+          echo "===== 包清单校验（$MAN）====="
+          miss=0
+          for k in $WIFI_PKGS luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
+            if grep -q "^${k} " "$MAN"; then
+              echo "  [ok] $k"
+            else
+              echo "  [FAIL] 镜像清单缺 $k"; miss=$((miss + 1))
+            fi
+          done
+          # wpad 变体随仓库不同，只要有一个 hostapd 套件就行
+          if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad) ' "$MAN"; then
+            echo "  [ok] wpad"
+          else
+            echo "  [FAIL] 镜像清单缺 wpad（无线起不了 AP）"; miss=$((miss + 1))
+          fi
+          if [ "$miss" -ne 0 ]; then
+            echo "::error::镜像包清单校验失败 $miss 项（见上方 [FAIL]）"; exit 1
+          fi
           ( cd out && sha256sum ./* > sha256sums.txt ) 2>/dev/null || true
           echo "===== ${{ matrix.title }} ====="
           ls -lh out
