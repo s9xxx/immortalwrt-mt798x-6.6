@@ -192,6 +192,9 @@ jobs:
             echo 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y'
             echo 'CONFIG_DEVEL=y'
             echo 'CONFIG_CCACHE=y'
+            # 上游 openwrt-25.12 的 DEFAULT_PACKAGES 里没有 luci（本仓库其它 workflow
+            # 都显式写了这一行），漏掉镜像就没有 LuCI 主集合（无 luci-mod-*/主题）。
+            echo 'CONFIG_PACKAGE_luci=y'
             cat ../devices-pack/"$SLUG"/config.fragment
             # iStore 依赖：只写 luci-app-store 时，缺 TAR_XZ / lua 运行时 / taskd 会被 kconfig
             # 整包丢掉（6.6 仓库的 customize.sh 就缺这一段，导致“iStore 市场未生效”）
