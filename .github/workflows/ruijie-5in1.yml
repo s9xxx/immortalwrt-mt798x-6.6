@@ -265,6 +265,17 @@ jobs:
           grep -q "^CONFIG_VERSION_DIST=\"$DIST\"$" .config || { echo "::error::发行名 $DIST 未生效"; exit 1; }
 
           grep -q "^CONFIG_PACKAGE_luci-theme-${THEME}=y$" .config || { echo "::error::主题 ${THEME} 未生效"; exit 1; }
+          if ! grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config; then
+            echo "::warning::iStore 首次未生效，打印依赖诊断并重试"
+            grep -n 'luci-app-store' .config | head -5 || true
+            grep -A20 'config PACKAGE_luci-app-store$' tmp/.config-package.in | head -24 || true
+            ./scripts/feeds install -f -p istore luci-app-store || true
+            ./scripts/feeds install -f -p istore luci-lib-taskd || true
+            ./scripts/feeds install -f -p istore taskd || true
+            echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
+            make defconfig
+            grep -n 'luci-app-store' .config | head -5 || true
+          fi
           grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config || { echo "::error::iStore 市场未生效"; exit 1; }
           grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config || { echo "::error::中文基础包未生效"; exit 1; }
           grep -q '^CONFIG_LUCI_LANG_zh_Hans=y$' .config || { echo "::error::中文开关未开启"; exit 1; }
