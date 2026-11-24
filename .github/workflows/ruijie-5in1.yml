@@ -199,6 +199,10 @@ jobs:
                      libuci-lua curl tar mount-utils xz-utils luci-compat luci-lua-runtime; do
               echo "CONFIG_PACKAGE_${p}=y"
             done
+            # luci-app-store 声明 `depends on !(PACKAGE_TAR_XZ) || PACKAGE_xz-utils`。
+            # 部分源码树里 xz-utils 符号缺失，TAR_XZ 默认又是 y，kconfig 会把整个
+            # store 丢掉（6.6 的 “iStore 市场未生效” 就是这个）。关掉 TAR_XZ 即满足依赖。
+            echo '# CONFIG_PACKAGE_TAR_XZ is not set'
           } > .config
           echo "---- 基础配置 ----"
           cat .config
@@ -268,6 +272,7 @@ jobs:
           if ! grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config; then
             echo "::warning::iStore 首次未生效，打印依赖诊断并重试"
             grep -n 'luci-app-store' .config | head -5 || true
+            grep -nE 'PACKAGE_(xz-utils|TAR_XZ|luci-lua-runtime)' .config | head -10 || true
             grep -A20 'config PACKAGE_luci-app-store$' tmp/.config-package.in | head -24 || true
             ./scripts/feeds install -f -p istore luci-app-store || true
             ./scripts/feeds install -f -p istore luci-lib-taskd || true
