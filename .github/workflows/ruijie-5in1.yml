@@ -163,6 +163,26 @@ jobs:
           mv .owrt-src openwrt
           echo ">>> 源码树就绪：$(cd openwrt && git rev-parse --short HEAD)"
 
+      - name: 修补上游 libsepol（25.12 的 3.9 不安装头文件，staging 必失败）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          python3 - <<'PY'
+          import io
+          p = 'package/libs/libsepol/Makefile'
+          s = io.open(p, encoding='utf-8').read()
+          old = '\t$(CP) $(PKG_INSTALL_DIR)/usr/include/* $(1)/usr/include/'
+          if 'usr/include/sepol/' not in s and old in s:
+              new = ('\t$(INSTALL_DIR) $(1)/usr/include/sepol\n'
+                     '\t$(CP) $(PKG_BUILD_DIR)/src/*.h $(1)/usr/include/sepol/')
+              io.open(p, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+              print('>>> libsepol: 头文件改从构建目录安装（3.9 的 install 不装头文件）')
+          else:
+              print('>>> libsepol: 无需修改')
+          PY
+          grep -q 'usr/include/sepol/' package/libs/libsepol/Makefile \
+            || { echo "::error::libsepol 头文件安装补丁未生效"; exit 1; }
+
       - name: 恢复 ccache
         if: steps.pick.outputs.selected != 'false'
         uses: actions/cache@v4
