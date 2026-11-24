@@ -14,9 +14,12 @@
 #      保证 /etc/config/wireless 有双频 AP 且启用；后续 99-wifi-boost 再做增强。
 set -euo pipefail
 
-SRC="${SOURCE_ROOT:-${1:-openwrt}}"
 SLUG="${SLUG:?SLUG 未设置（ew6000gx|x60new|x30epro|rgx30e|be72pro）}"
-PACK="devices-pack/$SLUG"
+SRC="${SOURCE_ROOT:-${1:-openwrt}}"
+[ -d "$SRC" ] || { echo "::error::源码树不存在: $SRC"; exit 1; }
+# 全程用绝对路径：后面会 cd 到设备包目录里铺 files/，相对路径会写错位置
+SRC="$(cd "$SRC" && pwd)"
+PACK="$(pwd)/devices-pack/$SLUG"
 
 [ -d "$PACK" ] || { echo "::error::找不到设备包 $PACK"; exit 1; }
 [ -d "$SRC/target/linux/mediatek" ] || { echo "::error::$SRC 不是 OpenWrt 源码树（缺 target/linux/mediatek）"; exit 1; }
@@ -46,6 +49,20 @@ echo ">>> SLUG=$SLUG DEVICE=$DEV"
 # 1) 设备包注入（DTS / filogic.mk 设备块 / files 覆盖层含 board.d 网口映射）
 # ---------------------------------------------------------------------------
 python3 scripts/apply-pack.py "$SRC" "$SLUG"
+
+# 兼容老版 apply-pack.py：mt798x-action / mt798x-6.6 的版本会把 files/ 覆盖层铺到
+# 源码根（<src>/etc/board.d），而构建只读 <src>/files/...，结果 board.d 从不执行、
+# WAN 直接消失。这里统一自己铺一遍，幂等且不依赖各仓库脚本版本。
+if [ -d "$PACK/files" ]; then
+  ( cd "$PACK/files" && find . -type f -print0 | while IFS= read -r -d '' f; do
+      dst="$SRC/files/${f#./}"
+      mkdir -p "$(dirname "$dst")"
+      cp -f "$f" "$dst"
+    done )
+  find "$SRC/files/etc/board.d" -type f -exec chmod 755 {} + 2>/dev/null || true
+  find "$SRC/files/etc/uci-defaults" -type f -exec chmod 755 {} + 2>/dev/null || true
+  echo ">>> 覆盖层就绪：$SRC/files（$(find "$SRC/files" -type f | wc -l) 个文件）"
+fi
 
 # ---------------------------------------------------------------------------
 # 2) BE72 Pro 专用 RTL837x 交换芯片驱动（包内 packages/ 可选）
