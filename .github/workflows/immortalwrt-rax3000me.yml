@@ -1,0 +1,450 @@
+# ImmortalWrt · CMCC RAX3000M-e（AN8855 外挂交换机）专用构建
+#
+# 为什么用 openwrt master（6.18）而不是本仓库的 24.10-6.6：
+#   AN8855 的 DSA 驱动与 U-Boot 侧修复只在 6.18 内核树里（patches-6.18/737-net-dsa-add-Airoha-AN8855.patch、
+#   files-6.18/drivers/net/{dsa,mdio,phy,mfd}/*an8855*），24.10-6.6 / 25.12 都没有这份驱动，
+#   所以那种树里 rax3000me 只能沿用 mt7531 的 DTS —— 网口必然起不来（TTL 刷完没网、拿不到 IP）。
+#
+# 设备：Device/cmcc_rax3000m（master 里 DEVICE_ALT0_MODEL := RAX3000Me，DTS 已含 airoha,an8855-mfd + an8855-switch）
+#   - 网口：AN8855 port0/1/2 = lan3/lan2/lan1，port5 = cpu(2500base-x 接 gmac0)；WAN 走 gmac1 int_gbe_phy
+#   - 产物：sysupgrade.itb + nand/emmc/ubi 的 bl31-uboot.fip（FIP 里带 an8855 初始化，TFTP 才可用）
+#   - 主题/iStore/中文/定时 跟随本仓库其他机型：argon + iStore + 强制 zh_cn，周一 08:30
+name: ImmortalWrt RAX3000M-e (AN8855) 编译
+
+on:
+  schedule:
+    # 北京时间每周一 08:30 = UTC 00:30（与本仓库其他机型一致）
+    - cron: '30 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      make_release:
+        description: '编译完成后发布 Release'
+        type: boolean
+        default: true
+  push:
+    branches: [openwrt-24.10-6.6]
+    paths:
+      - '.github/workflows/immortalwrt-rax3000me.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rax3000me
+  cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  DIST: ImmortalWrt
+  PREFIX: immortalwrt
+  VERSION: '6.18'
+  THEME: argon
+  DEVICE: cmcc_rax3000m
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 1500M
+  CCACHE_COMPRESS: 'true'
+  CCACHE_NOHASHDIR: 'true'
+
+jobs:
+  build:
+    name: 🏗️ RAX3000M-e (MT7981B + AN8855)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: 检出构建仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 释放磁盘空间并加大 swap
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache /usr/local/share/boost \
+                      /usr/local/lib/node_modules /usr/lib/jvm \
+                      /usr/share/swift /usr/share/miniconda /usr/share/rust \
+                      /usr/share/kotlinc /usr/share/gradle-* /opt/az \
+                      /opt/microsoft /usr/local/aws-cli /usr/local/.ghcup \
+                      /etc/mysql /etc/php /usr/local/go /opt/pipx 2>/dev/null || true
+          sudo systemctl stop docker docker.socket containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/docker /var/lib/containerd 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo swapoff -a 2>/dev/null || true
+          sudo rm -f /swapfile 2>/dev/null || true
+          if sudo fallocate -l 4G /swapfile 2>/dev/null; then
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null 2>&1 && sudo swapon /swapfile
+          fi
+          df -h / | tail -1
+          free -h
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get update -qq -o Acquire::Retries=3 || sudo -E apt-get update -qq
+          sudo -E apt-get install -y --no-install-recommends \
+            build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
+            gettext git libncurses5-dev libssl-dev libelf-dev python3-setuptools \
+            rsync swig unzip zlib1g-dev file wget dwarves llvm python3-pyelftools \
+            libpython3-dev aria2 jq ccache rename device-tree-compiler \
+            libgmp3-dev libmpc-dev pahole libdw-dev zstd \
+            autoconf automake autopoint binutils bzip2 cpio curl genisoimage \
+            gperf haveged help2man intltool libc6-dev-i386 libfuse-dev \
+            libglib2.0-dev libltdl-dev libmpfr-dev libncurses-dev \
+            libncursesw5-dev libreadline-dev libtool libxslt1-dev lrzsz \
+            ninja-build p7zip p7zip-full patch pkgconf python3-ply \
+            python3-docutils qemu-utils scons squashfs-tools subversion texinfo \
+            uglifyjs upx-ucl vim xxd
+          sudo timedatectl set-timezone "Asia/Shanghai"
+          ccache --version | head -1 || true
+
+      - name: 准备源码树（openwrt master / 6.18：AN8855 驱动在这里）
+        run: |
+          rm -rf openwrt .owrt-src
+          for i in 1 2 3; do
+            git clone -q --depth 1 -b master https://github.com/openwrt/openwrt .owrt-src && break
+            echo "::warning::clone 第 $i 次失败，重试"
+            rm -rf .owrt-src
+            sleep 10
+          done
+          [ -d .owrt-src ] || { echo "::error::上游源码克隆失败"; exit 1; }
+          mv .owrt-src openwrt
+          echo ">>> 源码树：$(cd openwrt && git rev-parse --short HEAD)（$(cd openwrt && git log -1 --format=%cd --date=short)）"
+
+      - name: 校验 AN8855 支持是否齐全（缺一即失败，避免又产出没网的固件）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          dts=target/linux/mediatek/dts/mt7981b-cmcc-rax3000m.dts
+          test -f "$dts" || { echo "::error::缺 $dts"; exit 1; }
+          for k in 'airoha,an8855-mfd' 'airoha,an8855-switch' 'airoha,an8855-mdio' 'airoha,an8855-efuse'; do
+            grep -q "$k" "$dts" || { echo "::error::DTS 缺 $k（AN8855 未接入）"; exit 1; }
+          done
+          grep -q 'ethernet = <&gmac0>' "$dts" || { echo "::error::DTS 里 AN8855 没有接 gmac0"; exit 1; }
+          for p in lan1 lan2 lan3; do
+            grep -q "label = \"$p\"" "$dts" || { echo "::error::DTS 缺 $p"; exit 1; }
+          done
+          # 内核侧驱动
+          test -f target/linux/mediatek/files-6.18/drivers/net/dsa/an8855.c \
+            || { echo "::error::缺 AN8855 DSA 驱动"; exit 1; }
+          ls target/linux/mediatek/patches-6.18/ | grep -q 'Airoha-AN8855' \
+            || { echo "::error::缺 AN8855 内核补丁"; exit 1; }
+          # 设备定义：cmcc_rax3000m 且带 RAX3000Me 别名 + FIP 产物
+          mk=target/linux/mediatek/image/filogic.mk
+          grep -q 'define Device/cmcc_rax3000m$' "$mk" || { echo "::error::缺 Device/cmcc_rax3000m"; exit 1; }
+          grep -q 'DEVICE_ALT0_MODEL := RAX3000Me' "$mk" || { echo "::error::设备定义没有 RAX3000Me 别名"; exit 1; }
+          grep -q 'nand-ddr3-bl31-uboot.fip' "$mk" || { echo "::error::设备定义没有可发布的 FIP"; exit 1; }
+          echo "✔ AN8855（DTS + 内核驱动 + FIP 产物）齐全"
+
+      - name: 恢复 ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-rax3000me-${{ github.run_id }}
+          restore-keys: |
+            ccache-rax3000me-
+
+      - name: 生成基础 .config（RAX3000M + argon + iStore + 强制中文）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          cat > .config <<'CFG'
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_MULTI_PROFILE=y
+          CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+          CONFIG_DEVEL=y
+          CONFIG_CCACHE=y
+          CONFIG_PACKAGE_luci-app-store=y
+          CONFIG_PACKAGE_luci-lib-taskd=y
+          CONFIG_PACKAGE_luci-lib-xterm=y
+          CONFIG_PACKAGE_taskd=y
+          CONFIG_PACKAGE_libuci-lua=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_tar=y
+          CONFIG_PACKAGE_mount-utils=y
+          CONFIG_PACKAGE_xz=y
+          CONFIG_PACKAGE_xz-utils=y
+          CONFIG_PACKAGE_liblzma=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_luci-lua-runtime=y
+          CONFIG_LUCI_LANG_zh_Hans=y
+          # luci-app-store 依赖 !(TAR_XZ) || xz-utils，tar 会强制打开 TAR_XZ，这里补 xz-utils
+          # CONFIG_PACKAGE_TAR_XZ is not set
+          CFG
+          sed -i 's/^          //' .config
+
+      - name: 主题 / iStore / 中文（沿用本仓库其他机型的 customize.sh）
+        run: bash scripts/customize.sh openwrt
+
+      - name: 收敛到 RAX3000Me + 校验
+        run: |
+          set -euo pipefail
+          cd openwrt
+          echo 'CONFIG_IMAGEOPT=y' >> .config
+          echo 'CONFIG_VERSIONOPT=y' >> .config
+          make defconfig
+
+          python3 - "$DEVICE" <<'PY'
+          import sys
+          keep = 'CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_' + sys.argv[1]
+          off, out = [], []
+          for line in open('.config', encoding='utf-8', errors='surrogateescape'):
+              name = line.split('=')[0].replace('# ', '').split(' ')[0]
+              if name.startswith('CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_') and name != keep:
+                  off.append(name)
+                  continue
+              out.append(line)
+          for n in dict.fromkeys(off):
+              out.append('# %s is not set\n' % n)
+          out.append('%s=y\n' % keep)
+          open('.config', 'w', encoding='utf-8', errors='surrogateescape').writelines(out)
+          print('已关闭非目标机型：%d 个' % len(off))
+          PY
+          echo "CONFIG_TARGET_MULTI_PROFILE=y" >> .config
+
+          if [ -f package/base-files/image-config.in ]; then
+            sed -i "s/^\(\s*\)default \"OpenWrt\"$/\1default \"$DIST\"/" package/base-files/image-config.in
+          fi
+          if grep -q '^CONFIG_KERNEL_DEBUG_INFO_BTF=y$' .config; then
+            sed -i 's/^CONFIG_KERNEL_DEBUG_INFO_BTF=y/# CONFIG_KERNEL_DEBUG_INFO_BTF is not set/' .config
+          fi
+          make defconfig
+          sed -i '/^CONFIG_VERSION_DIST=/d' .config
+          echo "CONFIG_VERSION_DIST=\"$DIST\"" >> .config
+
+          echo "===== 校验 ====="
+          grep -q "^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_${DEVICE}=y$" .config \
+            || { echo "::error::机型 ${DEVICE} 未生效"; exit 1; }
+          n_dev=$(grep -cE '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config || true)
+          [ "${n_dev:-0}" -eq 1 ] || { echo "::error::启用机型应为 1，实际 ${n_dev}"; exit 1; }
+          grep -q "^CONFIG_VERSION_DIST=\"$DIST\"$" .config || { echo "::error::发行名未生效"; exit 1; }
+
+          if ! grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config; then
+            echo "::warning::iStore 首次未生效，重试一次"
+            ./scripts/feeds install -f -p istore luci-app-store || true
+            ./scripts/feeds install -f -p istore luci-lib-taskd || true
+            printf 'CONFIG_PACKAGE_xz=y\nCONFIG_PACKAGE_xz-utils=y\nCONFIG_PACKAGE_liblzma=y\nCONFIG_PACKAGE_luci-lua-runtime=y\nCONFIG_PACKAGE_luci-app-store=y\n' >> .config
+            make defconfig
+          fi
+          grep -q '^CONFIG_PACKAGE_luci-app-store=y$' .config || { echo "::error::iStore 市场未生效"; exit 1; }
+          grep -q "^CONFIG_PACKAGE_luci-theme-${THEME}=y$" .config || { echo "::error::主题 ${THEME} 未生效"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_luci-i18n-base-zh-cn=y$' .config || { echo "::error::中文基础包未生效"; exit 1; }
+          grep -q '^CONFIG_LUCI_LANG_zh_Hans=y$' .config || { echo "::error::中文开关未开启"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_uhttpd=y$' .config || { echo "::error::uhttpd 未选中"; exit 1; }
+          grep -q '^CONFIG_PACKAGE_dropbear=y$' .config || { echo "::error::dropbear 未选中"; exit 1; }
+          grep -qE '^CONFIG_PACKAGE_(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad)=y$' .config \
+            || { echo "::error::wpad 未选中，无线起不了 AP"; exit 1; }
+
+          # 首启双频无线：按 band 判断（不写死 path/phy），SSID 用本机型名
+          mkdir -p files/etc/uci-defaults
+          cat > files/etc/uci-defaults/97-rax3000me-wifi <<'EOS'
+          #!/bin/sh
+          SSID_BASE='RAX3000ME'
+          i=0
+          while [ "$i" -lt 10 ]; do
+          	[ -n "$(ls -A /sys/class/ieee80211 2>/dev/null)" ] && break
+          	i=$((i + 1)); sleep 1
+          done
+          [ -f /etc/config/wireless ] || wifi config >/dev/null 2>&1 || true
+          [ -f /etc/config/wireless ] || exit 0
+          uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p' | while read -r r; do
+          	[ -n "$r" ] || continue
+          	band=$(uci -q get "wireless.$r.band")
+          	if [ -z "$band" ]; then
+          		case "$(uci -q get "wireless.$r.hwmode")" in
+          			11a|11ac|11ax|11be) band=5g ;;
+          			*) band=2g ;;
+          		esac
+          	fi
+          	suffix=2.4G
+          	[ "$band" = "5g" ] && suffix=5G
+          	[ "$band" = "6g" ] && suffix=6G
+          	uci -q set "wireless.$r.disabled=0"
+          	uci -q set "wireless.$r.country=CN"
+          	uci -q set "wireless.$r.ieee80211d=1"
+          	case "$band" in
+          		2g) uci -q set "wireless.$r.htmode=HE40" ;;
+          		*)  uci -q set "wireless.$r.channel=auto"; uci -q set "wireless.$r.htmode=HE160" ;;
+          	esac
+          	uci -q commit wireless
+          	idx=0
+          	while uci -q get "wireless.@wifi-iface[$idx]" >/dev/null 2>&1; do
+          		if [ "$(uci -q get "wireless.@wifi-iface[$idx].device")" = "$r" ]; then
+          			uci -q set "wireless.@wifi-iface[$idx].ssid=${SSID_BASE}-${suffix}"
+          			uci -q set "wireless.@wifi-iface[$idx].network=lan"
+          			uci -q set "wireless.@wifi-iface[$idx].disabled=0"
+          		fi
+          		idx=$((idx + 1))
+          	done
+          	uci -q commit wireless
+          done
+          exit 0
+          EOS
+          sed -i 's/^          //' files/etc/uci-defaults/97-rax3000me-wifi
+          chmod 755 files/etc/uci-defaults/97-rax3000me-wifi
+          test -x files/etc/uci-defaults/97-rax3000me-wifi || { echo "::error::无线脚本缺失"; exit 1; }
+          echo "机型 $DEVICE（RAX3000Me）/ 主题 $THEME / iStore + 中文 / 双频无线首启启用"
+
+      - name: 下载源码包
+        run: |
+          cd openwrt
+          make -j8 download < /dev/null || true
+          make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 编译固件
+        run: |
+          cd openwrt
+          export CCACHE_DIR CCACHE_MAXSIZE CCACHE_COMPRESS CCACHE_NOHASHDIR
+          mkdir -p "$CCACHE_DIR"
+          set -o pipefail
+          if make -j"$(nproc)" 2>&1 | tee build.log; then
+            echo ">>> ✅ 编译成功"
+          else
+            echo "::warning::并行编译失败，单线程复现"
+            fail="$(grep -o 'ERROR: [^ ]* failed to build' build.log | head -1 | awk '{print $2}')"
+            if [ -n "$fail" ]; then make -j1 V=s "$fail/compile" 2>&1 | tail -150 || true; else make -j1 V=s 2>&1 | tail -150 || true; fi
+            exit 1
+          fi
+
+      - name: 上传编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-rax3000me
+          path: |
+            openwrt/build.log
+            openwrt/.config
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 收集产物（sysupgrade.itb + FIP）
+        run: |
+          set -euo pipefail
+          B=openwrt/bin/targets/mediatek/filogic
+          mkdir -p out
+          shopt -s nullglob
+          for f in "$B"/*"$DEVICE"*; do
+            case "$f" in
+              *sysupgrade*|*.fip|*.manifest|profiles.json) cp -f "$f" out/ ;;
+            esac
+          done
+          for f in out/*; do
+            [ -e "$f" ] || continue
+            b=$(basename "$f")
+            case "$b" in
+              "$PREFIX"-*) : ;;
+              openwrt-*) mv -f "$f" "out/${PREFIX}-${b#openwrt-}" ;;
+              mediatek-*) mv -f "$f" "out/${PREFIX}-${b}" ;;
+            esac
+          done
+          sysup=( out/*sysupgrade* )
+          [ "${#sysup[@]}" -ge 1 ] || { echo "::error::缺 sysupgrade 产物"; ls -lh "$B" out || true; exit 1; }
+          fips=( out/*.fip )
+          [ "${#fips[@]}" -ge 1 ] || { echo "::error::缺 bl31-uboot.fip"; ls -lh "$B" out || true; exit 1; }
+          if ls out | grep -qiE 'factory|preloader|gpt'; then
+            echo "::error::多分区 U-Boot 机型只发 sysupgrade + fip"; ls out; exit 1
+          fi
+
+          # 镜像清单校验：无线 / 主题 / iStore / 中文必须在最终 rootfs 里
+          MAN=$(ls out/*.manifest 2>/dev/null | head -1)
+          [ -n "$MAN" ] || { echo "::error::缺 manifest"; ls out; exit 1; }
+          miss=0
+          for k in kmod-mt7915e mt7981-wo-firmware luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
+            if grep -q "^${k} " "$MAN"; then echo "  [ok] $k"; else echo "  [FAIL] 缺 $k"; miss=$((miss+1)); fi
+          done
+          if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad) ' "$MAN"; then echo "  [ok] wpad"; else echo "  [FAIL] 缺 wpad"; miss=$((miss+1)); fi
+          [ "$miss" -eq 0 ] || { echo "::error::镜像清单校验失败 $miss 项"; exit 1; }
+
+          for f in out/*; do
+            [ -e "$f" ] || continue
+            case "$(basename "$f")" in
+              *.fip) echo "FIP: $(basename "$f") $(stat -c %s "$f") bytes" ;;
+            esac
+          done
+          ( cd out && sha256sum ./* > sha256sums.txt )
+          ls -lh out
+          {
+            echo "## 🏗️ RAX3000M-e（AN8855）编译完成"
+            echo ""
+            echo "| 文件 | 大小 |"
+            echo "|---|---|"
+            ls -lh out | tail -n +2 | awk '{printf "| %s | %s |\n", $9, $5}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: images-rax3000me
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: 📦 发布 immortalwrt-6.18-日期
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.make_release) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 下载产物
+        uses: actions/download-artifact@v4
+        with:
+          name: images-rax3000me
+          path: rel
+
+      - name: 生成校验文件
+        run: |
+          cd rel
+          ls -lh
+          sha256sum ./* > sha256sums.txt
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          DATE=$(TZ=Asia/Shanghai date +%Y%m%d)
+          TAG="${PREFIX}-${VERSION}-${DATE}-rax3000me"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            TAG="${TAG}-r${GITHUB_RUN_NUMBER}"
+          fi
+          cat > notes.md <<'EOF'
+          ImmortalWrt 6.18（openwrt master）· CMCC RAX3000M-e · AN8855 外挂交换机
+
+          - 机型：MT7981B + AN8855（5 口千兆，SGMII/HSGMII 上行）
+          - 网口：AN8855 port0/1/2 → lan3/lan2/lan1，port5 → gmac0(2500base-x)；WAN 走 gmac1
+          - 无线：mt7915e + mt7981-wo-firmware，首启双频 AP `RAX3000ME-2.4G / RAX3000ME-5G`
+            （CN 国码、5G HE160、2.4G HE40）
+          - 界面：argon 主题 + iStore 市场 + 全量简体中文 + 强制 zh_cn
+          - 产物：`*-sysupgrade.itb` + `*-bl31-uboot.fip`（nand/emmc/ubi 各一组）
+          - 定时：每周一 08:30（北京时间）
+
+          ### 刷机顺序（重要）
+
+          1. 先刷 FIP：`*-nand-*-bl31-uboot.fip`（TFTP/BL2 方式）。FIP 里带 AN8855 初始化，
+             刷旧 FIP 会出现“TTL 能进 U-Boot 但网口起不来、TFTP 拿不到 IP”。
+          2. 进 U-Boot 后再刷 `*-sysupgrade.itb`。
+          3. 首次刷入前备份原厂分区；无线默认开放，刷完立即设密码。
+
+          ### 已知限制
+
+          - 若刷完仍无网口：先确认 FIP 是否为本 Release 里的版本；AN8855 的 reset GPIO 与
+            port 顺序按上游 master DTS（reset-gpios = <&pio 39>，port0/1/2 = lan3/lan2/lan1），
+            与个别硬件批次可能有差异，需要实机串口日志确认。
+          EOF
+          for i in 1 2 3 4 5; do
+            echo ">>> 第 $i 次上传"
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              gh release create "$TAG" --title "ImmortalWrt 6.18 · RAX3000M-e · ${DATE}" --notes-file notes.md || true
+            fi
+            if gh release upload "$TAG" rel/* --clobber; then
+              echo ">>> 上传成功（第 $i 次）"; exit 0
+            fi
+            sleep $((i * 30))
+          done
+          echo "::error::Release 上传失败，产物已保留在 Actions artifacts"
+          exit 1
