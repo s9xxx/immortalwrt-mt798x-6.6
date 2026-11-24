@@ -1,0 +1,76 @@
+# 临时诊断：单独编 U-Boot（不进 OpenWrt 全量构建），拿到真实 .config / dtb / 符号，
+# 用来确认 “Unable to get reset ctrl for frame engine” 到底是配置没开还是 reset provider 没绑上。
+name: Diag U-Boot MT7981 (reset ctrl)
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'defconfig 变体（nand / emmc / ubi）'
+        default: 'nand'
+      extra_config:
+        description: '额外追加的 CONFIG（分号分隔），如 CONFIG_DM_RESET=y'
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex bc libssl-dev libgnutls28-dev uuid-dev \
+            swig python3-dev python3-setuptools device-tree-compiler \
+            gcc-aarch64-linux-gnu
+
+      - name: 取 U-Boot v2026.07 与 openwrt 的 rax3000m 补丁
+        run: |
+          set -euo pipefail
+          curl -fsSL -o uboot.tar.gz https://codeload.github.com/u-boot/u-boot/tar.gz/refs/tags/v2026.07
+          mkdir ub && tar xf uboot.tar.gz -C ub --strip-components=1
+          curl -fsSL -o 437.patch \
+            https://raw.githubusercontent.com/openwrt/openwrt/master/package/boot/uboot-mediatek/patches/437-add-cmcc_rax3000m.patch
+          cd ub
+          patch -p1 < ../437.patch
+          echo ">>> u-boot 源码就绪"
+
+      - name: defconfig 并打印 reset/clk/eth 相关配置
+        run: |
+          set -euo pipefail
+          cd ub
+          make mt7981_cmcc_rax3000m-${{ inputs.variant }}_defconfig
+          if [ -n "${{ inputs.extra_config }}" ]; then
+            IFS=';' read -ra EXTRA <<< "${{ inputs.extra_config }}"
+            for kv in "${EXTRA[@]}"; do
+              [ -n "$kv" ] || continue
+              ./scripts/config --file .config --set-val "${kv%%=*}" "${kv##*=}"
+            done
+            make olddefconfig
+          fi
+          echo "===== .config 关键项 ====="
+          grep -E '^(CONFIG_(DM_RESET|RESET_MEDIATEK|MEDIATEK_ETH|MTK_ETH_SWITCH_[A-Z0-9]+|CLK|CLK_MT7981|TARGET_MT7981|PHY_FIXED|DM_GPIO)|# CONFIG_(DM_RESET|RESET_MEDIATEK|MTK_ETH_SWITCH_AN8855))' .config || true
+
+      - name: 编译
+        run: |
+          set -o pipefail
+          cd ub
+          make -j"$(nproc)" 2>&1 | tail -30
+
+      - name: 打印 dtb 与符号
+        run: |
+          set -uo pipefail
+          cd ub
+          ls -l u-boot.bin u-boot.dtb 2>/dev/null || true
+          echo "===== ethernet@15100000 ====="
+          dtc -I dtb -O dts u-boot.dtb 2>/dev/null | sed -n '/ethernet@15100000/,/^\t\t};/p' | head -45
+          echo "===== ethsys syscon@15000000 ====="
+          dtc -I dtb -O dts u-boot.dtb 2>/dev/null | sed -n '/syscon@15000000/,/^\t};/p' | head -20
+          echo "===== reset / switch 符号 ====="
+          aarch64-linux-gnu-nm u-boot 2>/dev/null | grep -iE 'mediatek_reset|an8855_|mt7531_|mtk_switch_init' | head -25
+          echo "===== 关键字符串 ====="
+          strings u-boot | grep -iE 'AN8855|7581|7531|reset ctrl for frame|unable to detect switch' | head -12
