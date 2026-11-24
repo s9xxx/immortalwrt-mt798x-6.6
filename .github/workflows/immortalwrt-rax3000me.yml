@@ -17,7 +17,7 @@
 #    若你的机器其实是 MT7531 版，用 switch_dts=mt7531 触发即可。
 #
 # 产物：sysupgrade.itb + nand/ubi 的 bl31-uboot.fip（FIP 必须刷，否则分区布局不对）
-name: ImmortalWrt RAX3000M-e (AN8855) 编译
+name: ImmortalWrt RAX3000Me (AN8855) 编译
 
 on:
   schedule:
