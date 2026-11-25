@@ -590,11 +590,16 @@ jobs:
           B=openwrt/bin/targets/mediatek/filogic
           mkdir -p out
           shopt -s nullglob
+          # 本机只有一种布局：NAND + DDR3。nand-ddr4 / ubi-* / emmc-* 是同系列
+          # 其它机型的引导件，跟 RAX3000M-e 无关，不能混进 Release（上一版 13 个产物）。
+          shopt -s nullglob
           for f in "$B"/*"$DEVICE"*; do
             case "$f" in
-              *sysupgrade*|*.fip|*preloader*|*.manifest|profiles.json) cp -f "$f" out/ ;;
+              *squashfs-sysupgrade.itb|*nand-ddr3-bl31-uboot.fip|*nand-ddr3-preloader.bin|*.manifest)
+                cp -f "$f" out/ ;;
             esac
           done
+          # 统一前缀（openwrt- / mediatek- → 仓库前缀）
           for f in out/*; do
             [ -e "$f" ] || continue
             b=$(basename "$f")
@@ -604,15 +609,28 @@ jobs:
               mediatek-*) mv -f "$f" "out/${PREFIX}-${b}" ;;
             esac
           done
-          sysup=( out/*sysupgrade* )
-          [ "${#sysup[@]}" -ge 1 ] || { echo "::error::缺 sysupgrade 产物"; ls -lh "$B" out || true; exit 1; }
-          fips=( out/*.fip )
-          [ "${#fips[@]}" -ge 1 ] || { echo "::error::缺 bl31-uboot.fip"; ls -lh "$B" out || true; exit 1; }
-          nand_fip=( out/*nand-ddr3*fip )
-          [ "${#nand_fip[@]}" -ge 1 ] || { echo "::error::缺 nand-ddr3 FIP（本机是 NAND + DDR3）"; ls out; exit 1; }
-          if ls out | grep -qiE 'factory|gpt'; then
-            echo "::error::只发 sysupgrade + fip + preloader"; ls out; exit 1
-          fi
+          # 机型名统一成 rax3000me：DEVICE 仍是 cmcc_rax3000m（只把 DTS 换成 ME 的），
+          # 文件名带 M 会让人以为刷错机器
+          for f in out/*; do
+            [ -e "$f" ] || continue
+            b=$(basename "$f")
+            case "$b" in
+              *cmcc_rax3000m*) mv -f "$f" "out/${b//cmcc_rax3000m/cmcc_rax3000me}" ;;
+            esac
+          done
+
+          sysup=( out/*cmcc_rax3000me-squashfs-sysupgrade.itb )
+          [ "${#sysup[@]}" -eq 1 ] || {
+            echo "::error::期望正好 1 个 sysupgrade.itb，实际 ${#sysup[@]} 个"; ls -lh out; exit 1; }
+          fips=( out/*nand-ddr3-*bl31-uboot.fip )
+          [ "${#fips[@]}" -eq 1 ] || {
+            echo "::error::缺 nand-ddr3 FIP（本机是 NAND + 512MB DDR3）或多出别的布局"; ls out; exit 1; }
+          pre=( out/*nand-ddr3-*preloader.bin )
+          [ "${#pre[@]}" -eq 1 ] || {
+            echo "::error::缺 nand-ddr3 preloader"; ls out; exit 1; }
+          extra=$(ls out | grep -cE 'ddr4|ubi-|emmc-|factory|gpt' || true)
+          [ "$extra" -eq 0 ] || {
+            echo "::error::混入了非本机布局的产物（ddr4/ubi/emmc/factory/gpt）"; ls out; exit 1; }
 
           # nullglob 下 `MAN=$(ls out/*.manifest)` 会退化成 `ls` 列当前目录，
           # 曾把 BSDmakefile 当成清单 → 6 项全灭。用数组 + rootfs 包数据库兜底。
@@ -627,7 +645,7 @@ jobs:
             PKGDB=$(find build_dir -maxdepth 5 -type f \( -path '*/apk/db/installed' -o -path '*/opkg/status' \) 2>/dev/null | head -1 || true)
             if [ -n "$PKGDB" ]; then
               case "$PKGDB" in
-                */apk/db/installed) sed -n 's/^P://(.*//)$///1/p' "$PKGDB" > "$PKGS" ;;
+              */apk/db/installed) sed -n 's/^P:\(.*\)$/\1/p' "$PKGDB" > "$PKGS" ;;
                 *) sed -n 's/^Package: \(.*\)$/\1/p' "$PKGDB" > "$PKGS" ;;
               esac
               echo "[info] 无 .manifest，改用 rootfs 包数据库校验：$PKGDB"
@@ -715,7 +733,9 @@ jobs:
           - 网口：AN8855 port0/1/2 → lan3/lan2/lan1，port5 → gmac0(2500base-x)
           - 无线：mt7915e，首启双频 AP `RAX3000ME-2.4G / RAX3000ME-5G`（CN、5G HE160、2.4G HE40）
           - 界面：argon + iStore 市场 + 全量简体中文 + 强制 zh_cn
-          - 产物：`*-sysupgrade.itb` + `*-bl31-uboot.fip` + `*-preloader.bin`（nand / ubi / ddr3 / ddr4）
+          - 产物（只发本机 3 件）：`*-cmcc_rax3000me-squashfs-sysupgrade.itb` +
+            `*-cmcc_rax3000me-nand-ddr3-bl31-uboot.fip` + `*-cmcc_rax3000me-nand-ddr3-preloader.bin`
+            （ddr4 / ubi / emmc 是同系列其它机型的引导件，不属于 RAX3000M-e）
 
           ### 这一版修了什么（对着串口日志）
 
