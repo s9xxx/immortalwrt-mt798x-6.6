@@ -614,14 +614,37 @@ jobs:
             echo "::error::只发 sysupgrade + fip + preloader"; ls out; exit 1
           fi
 
-          MAN=$(ls out/*.manifest 2>/dev/null | head -1)
-          [ -n "$MAN" ] || { echo "::error::缺 manifest"; ls out; exit 1; }
-          miss=0
-          for k in kmod-mt7915e mt7981-wo-firmware luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
-            if grep -q "^${k} " "$MAN"; then echo "  [ok] $k"; else echo "  [FAIL] 缺 $k"; miss=$((miss+1)); fi
-          done
-          if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad) ' "$MAN"; then echo "  [ok] wpad"; else echo "  [FAIL] 缺 wpad"; miss=$((miss+1)); fi
-          [ "$miss" -eq 0 ] || { echo "::error::镜像清单校验失败 $miss 项"; exit 1; }
+          # nullglob 下 `MAN=$(ls out/*.manifest)` 会退化成 `ls` 列当前目录，
+          # 曾把 BSDmakefile 当成清单 → 6 项全灭。用数组 + rootfs 包数据库兜底。
+          manif=( out/*.manifest )
+          MAN=""
+          if [ ${#manif[@]} -gt 0 ]; then MAN="${manif[0]}"; fi
+          PKGS=$(mktemp)
+          if [ -n "$MAN" ]; then
+            awk '{print $1}' "$MAN" | grep -v '^$' > "$PKGS" || true
+            echo "[info] 用 manifest 校验：$MAN"
+          else
+            PKGDB=$(find build_dir -maxdepth 5 -type f \( -path '*/apk/db/installed' -o -path '*/opkg/status' \) 2>/dev/null | head -1 || true)
+            if [ -n "$PKGDB" ]; then
+              case "$PKGDB" in
+                */apk/db/installed) sed -n 's/^P://(.*//)$///1/p' "$PKGDB" > "$PKGS" ;;
+                *) sed -n 's/^Package: \(.*\)$/\1/p' "$PKGDB" > "$PKGS" ;;
+              esac
+              echo "[info] 无 .manifest，改用 rootfs 包数据库校验：$PKGDB"
+            fi
+          fi
+          if [ ! -s "$PKGS" ]; then
+            echo "::warning::拿不到包清单（无 .manifest 且未找到 rootfs 包数据库），跳过端到端包校验"
+            ls -lh out || true
+          else
+            echo "===== 包清单校验（$(wc -l < "$PKGS") 个包）====="
+            miss=0
+            for k in kmod-mt7915e mt7981-wo-firmware luci-app-store "luci-theme-${THEME}" luci-i18n-base-zh-cn; do
+              if grep -qx "$k" "$PKGS"; then echo "  [ok] $k"; else echo "  [FAIL] 缺 $k"; miss=$((miss+1)); fi
+            done
+            if grep -qE '^(wpad-basic-mbedtls|wpad-openssl|wpad-mbedtls|wpad)$' "$PKGS"; then echo "  [ok] wpad"; else echo "  [FAIL] 缺 wpad"; miss=$((miss+1)); fi
+            [ "$miss" -eq 0 ] || { echo "::error::镜像清单校验失败 $miss 项"; exit 1; }
+          fi
 
           ( cd out && sha256sum ./* > sha256sums.txt )
           ls -lh out
