@@ -238,12 +238,15 @@ jobs:
           set -euo pipefail
           cd openwrt
           dts=target/linux/mediatek/dts/mt7981b-cmcc-rax3000me.dts
+          base=target/linux/mediatek/dts/mt7981b-cmcc-rax3000m.dts
+          # 本仓库的 me.dts 只有 include + model（186 字节），AN8855 节点在 base 里，
+          # 因此两个文件合并搜索；不同分支拆分方式不同也不会误判。
+          has() { grep -q "$1" "$dts" 2>/dev/null || grep -q "$1" "$base" 2>/dev/null; }
           for k in 'airoha,an8855-mfd' 'airoha,an8855-switch' 'airoha,an8855-efuse'; do
-            grep -q "$k" "$dts" || { echo "::error::树内 DTS 缺 $k"; exit 1; }
+            has "$k" || { echo "::error::树内 DTS 缺 $k"; exit 1; }
           done
-          grep -q 'ethernet = <&gmac0>' "$dts" \
-            || { echo "::error::AN8855 没接 gmac0"; exit 1; }
-          echo "✔ 官方 AN8855 节点完整（mfd / switch / efuse / gmac0）"
+          has 'ethernet = <&gmac0>' || { echo "::error::AN8855 没接 gmac0"; exit 1; }
+          echo "✔ 树内 AN8855 节点完整（mfd / switch / efuse / gmac0）"
 
       - name: 恢复 ccache
         uses: actions/cache@v4
