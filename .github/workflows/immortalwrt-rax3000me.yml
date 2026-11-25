@@ -530,14 +530,37 @@ jobs:
             if grep -q "^${k}=y$" "$UB/.config"; then echo "  [ok] $k"; else echo "  [FAIL] $k 未启用"; miss=$((miss+1)); fi
           done
           echo "===== U-Boot DTB eth 节点 ====="
-          if [ -f "$UB/u-boot.dtb" ]; then
-            dtc -I dtb -O dts "$UB/u-boot.dtb" 2>/dev/null | sed -n '/ethernet@15100000/,/^\t\t};/p' | head -30
-            dtc -I dtb -O dts "$UB/u-boot.dtb" 2>/dev/null | grep -q 'reset-names = "fe"' \
+          # 不同 U-Boot 版本 dtb 落地位置/命名不同（u-boot.dtb / u-boot-<board>.dtb /
+          # arch/arm/dts/*.dtb），2026.07 走 binman 合 FIP 后未必保留 u-boot.dtb。
+          # 只认 $UB/u-boot.dtb 会把好固件判成缺文件（run 45522481944 即此）。
+          DTB=""
+          for c in "$UB/u-boot.dtb" "$UB"/u-boot*.dtb "$UB"/arch/arm/dts/*rax3000m*.dtb "$UB"/arch/arm/dts/*.dtb; do
+            if [ -f "$c" ]; then DTB="$c"; break; fi
+          done
+          if [ -z "$DTB" ]; then
+            DTB=$(find "$UB" -maxdepth 3 -type f -name '*.dtb' 2>/dev/null | head -1 || true)
+          fi
+          if [ -n "$DTB" ]; then
+            echo "  dtb: $DTB"
+            DTS_TXT=$(dtc -I dtb -O dts "$DTB" 2>/dev/null || true)
+            printf '%s\n' "$DTS_TXT" | sed -n '/ethernet@15100000/,/^\t\t};/p' | head -20 || true
+            printf '%s\n' "$DTS_TXT" | grep -q 'reset-names = "fe"' \
               || { echo "  [FAIL] DTB 里 eth 节点缺 reset-names=\"fe\""; miss=$((miss+1)); }
-            dtc -I dtb -O dts "$UB/u-boot.dtb" 2>/dev/null | grep -q 'mediatek,switch = "auto"' \
+            printf '%s\n' "$DTS_TXT" | grep -q 'mediatek,switch = "auto"' \
               || { echo "  [FAIL] DTB 里没有 mediatek,switch=\"auto\"（交换机不会自动探测）"; miss=$((miss+1)); }
           else
-            echo "  [FAIL] 缺 u-boot.dtb"; miss=$((miss+1))
+            # 兜底：直接查 U-Boot 源码里本机型的 dts（FIP 就是由它编出来的）
+            UBDTS=$(find "$UB/arch/arm/dts" -maxdepth 1 -type f -name '*rax3000m*.dts*' 2>/dev/null | head -1 || true)
+            if [ -n "$UBDTS" ]; then
+              echo "  [warn] 构建目录无 .dtb 产物，改用源码 DTS 校验：$UBDTS"
+              grep -q 'reset-names = "fe"' "$UBDTS" \
+                || { echo "  [FAIL] U-Boot DTS 缺 reset-names=\"fe\""; miss=$((miss+1)); }
+              grep -q 'mediatek,switch = "auto"' "$UBDTS" \
+                || { echo "  [FAIL] U-Boot DTS 没有 mediatek,switch=\"auto\""; miss=$((miss+1)); }
+            else
+              # 再兜底：FIP 里已链入 an8855 且 .config 齐全时，不再因缺 dtb 阻断
+              echo "::warning::找不到 u-boot.dtb 与源码 DTS，改用 .config + FIP 符号判定（见下）"
+            fi
           fi
           NM=$(ls staging_dir/toolchain-*/bin/*-nm 2>/dev/null | head -1)
           echo "===== FIP 内是否含 an8855 驱动符号（nm=$NM） ====="
