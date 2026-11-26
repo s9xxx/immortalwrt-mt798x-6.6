@@ -513,9 +513,9 @@ jobs:
           # 上一轮的 .compiled / ipkg-install 是在旧 Makefile 下产生的，必须清掉重编
           rm -rf build_dir/target-*/libcryptopp-*
           rm -f staging_dir/target-*/stamp/.libcryptopp_installed
-          make -j1 "$PDIR/compile" V=s 2>&1 | tail -60
-          ls -lh build_dir/target-*/libcryptopp-*/libcryptopp.so* || {
-            echo "::error::libcryptopp 编译后没有 .so"; ls -lh build_dir/target-*/libcryptopp-* | head -40; exit 1; }
+          # 本仓库的包不在 package/feeds 下，make 没有 feeds/../compile 这样的目标，
+          # 打完补丁 + 清掉旧产物即可，交给后面的 make world 重新编译该包。
+          echo ">>> libcryptopp: 补丁就绪，旧产物已清理"
 
       - name: 编译固件
         run: |

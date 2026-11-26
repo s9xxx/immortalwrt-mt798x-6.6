@@ -474,9 +474,9 @@ jobs:
           # 上一轮的 .compiled / ipkg-install 是在旧 Makefile 下产生的，必须清掉重编
           rm -rf build_dir/target-*/libcryptopp-*
           rm -f staging_dir/target-*/stamp/.libcryptopp_installed
-          make -j1 "$PDIR/compile" V=s 2>&1 | tail -60
-          ls -lh build_dir/target-*/libcryptopp-*/libcryptopp.so* || {
-            echo "::error::libcryptopp 编译后没有 .so"; ls -lh build_dir/target-*/libcryptopp-* | head -40; exit 1; }
+          # 本仓库的包不在 package/feeds 下，make 没有 feeds/../compile 这样的目标，
+          # 打完补丁 + 清掉旧产物即可，交给后面的 make world 重新编译该包。
+          echo ">>> libcryptopp: 补丁就绪，旧产物已清理"
 
       - name: 编译固件
         run: |
@@ -662,6 +662,8 @@ jobs:
           fi
           cat > notes.md <<'EOF'
           ImmortalWrt 25.12（本仓库 openwrt-24.10-6.6）· CMCC RAX3000M-e
+            > **官方原生版**：DTS / 设备块 / U-Boot 全部来自官方，未做任何改动。
+            > 若 TTL 报 `an8855 ... probe failed -16`（交换机抢 reset GPIO），请改刷 **V2** 版。
 
           - 机型：MT7981B，树内 DTS 定义为 AN8855 外挂交换机（3x GbE LAN + 2.5G 上行到 gmac0）；WAN 走 gmac1
           - 源码：本仓库 `openwrt-24.10-6.6`，设备 `cmcc_rax3000me` 由官方原生支持
@@ -678,7 +680,7 @@ jobs:
           for i in 1 2 3 4 5; do
             echo ">>> 第 $i 次上传"
             if ! gh release view "$TAG" >/dev/null 2>&1; then
-              gh release create "$TAG" --title "ImmortalWrt 6.6 · RAX3000M-e · ${DATE}" --notes-file notes.md || true
+              gh release create "$TAG" --title "ImmortalWrt 6.6 · RAX3000M-e（官方原生 DTS）· ${DATE}" --notes-file notes.md || true
             fi
             if gh release upload "$TAG" rel/* --clobber; then
               echo ">>> 上传成功（第 $i 次）"; exit 0
