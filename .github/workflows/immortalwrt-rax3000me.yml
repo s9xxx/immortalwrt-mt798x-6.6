@@ -448,7 +448,8 @@ jobs:
                   'define Build/Install\n'
                   '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/local/lib $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig $(PKG_INSTALL_DIR)/usr/local/include/cryptopp\n'
                   '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/lib $(PKG_INSTALL_DIR)/usr/include/cryptopp\n'
-                  '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/\n'
+                  '\t$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/\n'
+                  '\tls $(PKG_INSTALL_DIR)/usr/local/lib/libcryptopp.so* >/dev/null || { echo "ERROR: libcryptopp.so 未生成"; ls -lh $(PKG_BUILD_DIR) | head -40; exit 1; }\n'
                   '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/lib/\n'
                   '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.a $(PKG_INSTALL_DIR)/usr/local/lib/\n'
                   '\t-$(CP) $(PKG_BUILD_DIR)/*.h $(PKG_INSTALL_DIR)/usr/local/include/cryptopp/\n'
@@ -457,9 +458,7 @@ jobs:
                   '\n'
                   'define Package/libcryptopp/install\n'
                   '\t$(INSTALL_DIR) $(1)/usr/lib\n'
-                  '\t@src=""; for c in $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/lib/libcryptopp.so*; do [ -e "$$c" ] && { src="$$c"; break; }; done; \\\n'
-                  '\t [ -n "$$src" ] || { echo "ERROR: libcryptopp.so 未生成"; ls -lh $(PKG_BUILD_DIR) | head -40; exit 1; }; \\\n'
-                  '\t $(CP) $$src $(1)/usr/lib/\n'
+                  '\t$(CP) $(PKG_INSTALL_DIR)/usr/local/lib/libcryptopp.so* $(1)/usr/lib/\n'
                   'endef\n')
               anchor = '$(eval $(call BuildPackage,libcryptopp))'
               if anchor in s:
