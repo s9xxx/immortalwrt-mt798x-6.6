@@ -301,23 +301,6 @@ jobs:
           python3 - <<'PY'
           import io
           import os
-          # libcryptopp（feeds/packages）：上游 install 把 .so 装到 usr/local/lib，
-          # Package/install 也按 usr/local/lib 拷，交叉环境该目录可能为空 →
-          # cp cannot stat libcryptopp.so*（6.6 仓库 rax3000me 即此）。
-          # 这里直接定义 Build/Install，从构建目录取产物。
-          p = 'package/feeds/packages/libs/libcryptopp/Makefile'
-          if os.path.exists(p):
-              s = io.open(p, encoding='utf-8').read()
-              if 'define Build/Install\n' not in s:
-                  s += ('\ndefine Build/Install\n'
-                        '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/local/lib $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig $(PKG_INSTALL_DIR)/usr/local/include/cryptopp\n'
-                        '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/\n'
-                        '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.a $(PKG_INSTALL_DIR)/usr/local/lib/\n'
-                        '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.pc $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig/\n'
-                        '\t-$(CP) $(PKG_BUILD_DIR)/*.h $(PKG_INSTALL_DIR)/usr/local/include/cryptopp/\n'
-                        'endef\n')
-                  io.open(p, 'w', encoding='utf-8').write(s)
-                  print('>>> libcryptopp: Build/Install 自建拷贝')
           PY
           echo 'CONFIG_IMAGEOPT=y' >> .config
           echo 'CONFIG_VERSIONOPT=y' >> .config
@@ -435,6 +418,56 @@ jobs:
           cd openwrt
           make -j8 download < /dev/null || true
           make -j1 download < /dev/null 2>&1 | tail -20 || true
+
+      - name: 修复并预编译 libcryptopp（确保 .so 落地）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          python3 - <<'PY'
+          import io, os
+          cands = ['package/feeds/packages/libs/libcryptopp/Makefile',
+                   'feeds/packages/libs/libcryptopp/Makefile']
+          p = next((c for c in cands if os.path.exists(c)), None)
+          assert p, 'libcryptopp Makefile 未找到（feeds 未安装？）'
+          s = io.open(p, encoding='utf-8').read()
+          marker = '# --- ci: libcryptopp install 修复 ---'
+          if marker in s:
+              print('>>> libcryptopp: 修复已存在')
+          else:
+              block = (
+                  '\n' + marker + '\n'
+                  'define Build/Install\n'
+                  '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/local/lib $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig $(PKG_INSTALL_DIR)/usr/local/include/cryptopp\n'
+                  '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/lib $(PKG_INSTALL_DIR)/usr/include/cryptopp\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/lib/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.a $(PKG_INSTALL_DIR)/usr/local/lib/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/*.h $(PKG_INSTALL_DIR)/usr/local/include/cryptopp/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/*.h $(PKG_INSTALL_DIR)/usr/include/cryptopp/\n'
+                  'endef\n'
+                  '\n'
+                  'define Package/libcryptopp/install\n'
+                  '\t$(INSTALL_DIR) $(1)/usr/lib\n'
+                  '\t@src=""; for c in $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/lib/libcryptopp.so*; do [ -e "$$c" ] && { src="$$c"; break; }; done; \\\n'
+                  '\t [ -n "$$src" ] || { echo "ERROR: libcryptopp.so 未生成"; ls -lh $(PKG_BUILD_DIR) | head -40; exit 1; }; \\\n'
+                  '\t $(CP) $$src $(1)/usr/lib/\n'
+                  'endef\n')
+              anchor = '$(eval $(call BuildPackage,libcryptopp))'
+              if anchor in s:
+                  s = s.replace(anchor, block + '\n' + anchor, 1)
+              else:
+                  s += block
+              io.open(p, 'w', encoding='utf-8').write(s)
+              print('>>> libcryptopp: 已重定义 Build/Install + Package/install')
+          PY
+          grep -q 'ci: libcryptopp install 修复' package/feeds/packages/libs/libcryptopp/Makefile \
+            || { echo "::error::libcryptopp 补丁未写入"; exit 1; }
+          # 上一轮的 .compiled / ipkg-install 是在旧 Makefile 下产生的，必须清掉重编
+          rm -rf build_dir/target-*/libcryptopp-*
+          rm -f staging_dir/target-*/stamp/.libcryptopp_installed
+          make -j1 package/feeds/packages/libs/libcryptopp/compile V=s 2>&1 | tail -60
+          ls -lh build_dir/target-*/libcryptopp-*/libcryptopp.so* || {
+            echo "::error::libcryptopp 编译后没有 .so"; ls -lh build_dir/target-*/libcryptopp-* | head -40; exit 1; }
 
       - name: 编译固件
         run: |
