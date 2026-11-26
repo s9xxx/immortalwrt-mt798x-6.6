@@ -428,9 +428,18 @@ jobs:
           echo "# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client is not set" >> .config
           echo "# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server is not set" >> .config
           echo "# CONFIG_RUST_SCCACHE is not set" >> .config
+          # minieap 0.93 在 24.10/6.6 交叉环境下 install 阶段找不到
+          # ipkg-install/usr/local/sbin/minieap（上游 install 规则与实际产物路径不一致），
+          # 会拖挂整机构建；该包是校园网认证客户端，不是本固件必需，直接关掉。
+          for s in minieap luci-proto-minieap luci-app-minieap luci-i18n-minieap-zh-cn; do
+            echo "# CONFIG_PACKAGE_${s} is not set" >> .config
+          done
           make defconfig
           if grep -q '^CONFIG_PACKAGE_rust=y$' .config; then
             echo "::error::rust 仍被选中，host 编译会失败"; exit 1
+          fi
+          if grep -q '^CONFIG_PACKAGE_minieap=y$' .config; then
+            echo "::error::minieap 仍被选中，install 阶段会失败"; exit 1
           fi
           echo "✔ rust / rustdesk / shadowsocks-rust 已关闭"
 
