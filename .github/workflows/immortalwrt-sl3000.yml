@@ -804,6 +804,8 @@ jobs:
                   '\t$(INSTALL_DIR) $(PKG_INSTALL_DIR)/usr/lib $(PKG_INSTALL_DIR)/usr/include/cryptopp\n'
                   '\t$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/local/lib/\n'
                   '\tls $(PKG_INSTALL_DIR)/usr/local/lib/libcryptopp.so* >/dev/null || { echo "ERROR: libcryptopp.so 未生成"; ls -lh $(PKG_BUILD_DIR) | head -40; exit 1; }\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.pc $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig/\n'
+                  '\t-$(CP) $(PKG_BUILD_DIR)/src/libcryptopp.pc $(PKG_INSTALL_DIR)/usr/local/lib/pkgconfig/\n'
                   '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.so* $(PKG_INSTALL_DIR)/usr/lib/\n'
                   '\t-$(CP) $(PKG_BUILD_DIR)/libcryptopp.a $(PKG_INSTALL_DIR)/usr/local/lib/\n'
                   '\t-$(CP) $(PKG_BUILD_DIR)/*.h $(PKG_INSTALL_DIR)/usr/local/include/cryptopp/\n'
