@@ -413,6 +413,27 @@ jobs:
           test -x files/etc/uci-defaults/97-rax3000me-wifi || { echo "::error::无线脚本缺失"; exit 1; }
           echo "机型 $DEVICE（RAX3000Me，树内 DTS）/ 主题 $THEME / iStore + 中文 / 双频无线首启启用"
 
+      - name: 关闭 Rust 相关包（避免 rustc 从源码编译失败）
+        run: |
+          set -euo pipefail
+          cd openwrt
+          # feeds/packages 的 rust 1.94 是 PKG_HOST_ONLY，会在 runner 上从源码编译
+          # rustc/cargo/llvm，耗时 1h+ 且容易失败；这些包不是本固件必需，直接关掉。
+          for s in \
+            rust rustdesk-server luci-app-rustdesk-server luci-i18n-rustdesk-server-zh-cn \
+            shadowsocks-rust-sslocal shadowsocks-rust-ssmanager shadowsocks-rust-ssserver \
+            shadowsocks-rust-ssservice shadowsocks-rust-ssurl librespeed-cli-rust; do
+            echo "# CONFIG_PACKAGE_${s} is not set" >> .config
+          done
+          echo "# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client is not set" >> .config
+          echo "# CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server is not set" >> .config
+          echo "# CONFIG_RUST_SCCACHE is not set" >> .config
+          make defconfig
+          if grep -q '^CONFIG_PACKAGE_rust=y$' .config; then
+            echo "::error::rust 仍被选中，host 编译会失败"; exit 1
+          fi
+          echo "✔ rust / rustdesk / shadowsocks-rust 已关闭"
+
       - name: 下载源码包
         run: |
           cd openwrt
@@ -489,8 +510,18 @@ jobs:
             echo ">>> ✅ 编译成功"
           else
             echo "::warning::并行编译失败，单线程复现"
-            fail="$(grep -o 'ERROR: [^ ]* failed to build' build.log | head -1 | awk '{print $2}')"
-            if [ -n "$fail" ]; then make -j1 V=s "$fail/compile" 2>&1 | tail -150 || true; else make -j1 V=s 2>&1 | tail -150 || true; fi
+            fail_line="$(grep -m1 'ERROR: .* failed to build' build.log || true)"
+            fail="$(printf '%s' "$fail_line" | sed -n 's/.*ERROR: \([^ ]*\).*/\1/p')"
+            if [ -n "$fail" ]; then
+              case "$fail_line" in
+                *'[host]'*) target="$fail/host-compile" ;;
+                *) target="$fail/compile" ;;
+              esac
+              echo ">>> 单线程复现目标：$target"
+              make -j1 V=s "$target" 2>&1 | tail -200 || true
+            else
+              make -j1 V=s 2>&1 | tail -200 || true
+            fi
             exit 1
           fi
 
