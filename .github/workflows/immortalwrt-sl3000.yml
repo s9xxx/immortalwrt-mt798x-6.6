@@ -777,12 +777,21 @@ jobs:
         run: |
           set -euo pipefail
           cd openwrt
-          python3 - <<'PY'
-          import io, os
-          cands = ['package/feeds/packages/libs/libcryptopp/Makefile',
-                   'feeds/packages/libs/libcryptopp/Makefile']
-          p = next((c for c in cands if os.path.exists(c)), None)
-          assert p, 'libcryptopp Makefile 未找到（feeds 未安装？）'
+          # 本仓库的 feeds 不挂在 package/feeds 下，直接在 feeds/ 里，先把目录探出来
+          PDIR=$(python3 - <<'PY'
+          import os
+          for c in ['package/feeds/packages/libs/libcryptopp',
+                    'feeds/packages/libs/libcryptopp']:
+              if os.path.isdir(c):
+                  print(c)
+                  break
+          PY
+          )
+          [ -n "$PDIR" ] || { echo "::error::找不到 libcryptopp 包目录"; ls -d feeds/*/*/*/libcryptopp package/feeds/*/*/libcryptopp 2>/dev/null | head -5; exit 1; }
+          echo ">>> libcryptopp 目录：$PDIR"
+          python3 - "$PDIR" <<'PY'
+          import io, os, sys
+          p = os.path.join(sys.argv[1], 'Makefile')
           s = io.open(p, encoding='utf-8').read()
           marker = '# --- ci: libcryptopp install 修复 ---'
           if marker in s:
@@ -814,12 +823,12 @@ jobs:
               io.open(p, 'w', encoding='utf-8').write(s)
               print('>>> libcryptopp: 已重定义 Build/Install + Package/install')
           PY
-          grep -q 'ci: libcryptopp install 修复' package/feeds/packages/libs/libcryptopp/Makefile \
-            || { echo "::error::libcryptopp 补丁未写入"; exit 1; }
+          grep -q 'ci: libcryptopp install 修复' "$PDIR/Makefile" \
+            || { echo "::error::libcryptopp 补丁未写入 $PDIR/Makefile"; exit 1; }
           # 上一轮的 .compiled / ipkg-install 是在旧 Makefile 下产生的，必须清掉重编
           rm -rf build_dir/target-*/libcryptopp-*
           rm -f staging_dir/target-*/stamp/.libcryptopp_installed
-          make -j1 package/feeds/packages/libs/libcryptopp/compile V=s 2>&1 | tail -60
+          make -j1 "$PDIR/compile" V=s 2>&1 | tail -60
           ls -lh build_dir/target-*/libcryptopp-*/libcryptopp.so* || {
             echo "::error::libcryptopp 编译后没有 .so"; ls -lh build_dir/target-*/libcryptopp-* | head -40; exit 1; }
 
