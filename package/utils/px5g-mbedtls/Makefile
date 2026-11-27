@@ -52,7 +52,7 @@ ifeq ($(BUILD_VARIANT),standalone)
   TARGET_LDFLAGS := -Wl,-Bstatic $(TARGET_LDFLAGS) -Wl,-Bdynamic
 endif
 
-TARGET_CFLAGS += -Wl,--gc-sections -Wall -Werror
+TARGET_CFLAGS += -Wl,--gc-sections -Wall -Werror -Wno-error=deprecated-declarations
 
 define Build/Compile
 	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/px5g px5g-mbedtls.c $(TARGET_LDFLAGS)

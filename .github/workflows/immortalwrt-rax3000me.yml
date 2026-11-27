@@ -434,6 +434,12 @@ jobs:
           for s in minieap luci-proto-minieap luci-app-minieap luci-i18n-minieap-zh-cn; do
             echo "# CONFIG_PACKAGE_${s} is not set" >> .config
           done
+          # squid 7.1 链接 libpam.so.0，但固件未选 libpam，打包阶段会报
+          # "Package squid is missing dependencies for the following libraries: libpam.so.0"
+          # 并拖挂 make world；该代理服务不是路由器固件必需，直接关掉 squid 与 LuCI 入口。
+          for s in squid luci-app-squid luci-i18n-squid-zh-cn; do
+            echo "# CONFIG_PACKAGE_${s} is not set" >> .config
+          done
           make defconfig
           if grep -q '^CONFIG_PACKAGE_rust=y$' .config; then
             echo "::error::rust 仍被选中，host 编译会失败"; exit 1
@@ -441,7 +447,10 @@ jobs:
           if grep -q '^CONFIG_PACKAGE_minieap=y$' .config; then
             echo "::error::minieap 仍被选中，install 阶段会失败"; exit 1
           fi
-          echo "✔ rust / rustdesk / shadowsocks-rust 已关闭"
+          if grep -q '^CONFIG_PACKAGE_squid=y$' .config; then
+            echo "::error::squid 仍被选中，会因 libpam.so.0 缺失打包失败"; exit 1
+          fi
+          echo "✔ rust / rustdesk / shadowsocks-rust / squid 已关闭"
 
       - name: 下载源码包
         run: |
