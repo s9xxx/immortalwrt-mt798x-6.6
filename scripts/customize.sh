@@ -74,6 +74,10 @@ CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_luci-app-store=y
 CONFIG_PACKAGE_luci-i18n-store-zh-cn=y
 CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+# squid 7.1 链接 libpam.so.0，默认配置未选 libpam，打包阶段会报缺依赖并拖挂 make world；
+# 该代理服务不是路由器固件必需，所有机型统一关掉。
+# CONFIG_PACKAGE_squid is not set
+# CONFIG_PACKAGE_luci-app-squid is not set
 EOF
 
 echo "== 5/5 写入首启脚本（默认主题 / 中文界面 / 无线增强）=="
