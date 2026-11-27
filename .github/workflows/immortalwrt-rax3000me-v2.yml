@@ -479,6 +479,10 @@ jobs:
           for s in squid luci-app-squid luci-i18n-squid-zh-cn; do
             echo "# CONFIG_PACKAGE_${s} is not set" >> .config
           done
+          # btop 1.4.5 的 install 规则指向 ipkg-install/usr/local/bin/btop，
+          # 但实际编译产物不在该路径，install 阶段报 No such file or directory
+          # 并拖挂 make world。btop 只是可选系统监控工具，直接关掉。
+          echo "# CONFIG_PACKAGE_btop is not set" >> .config
           make defconfig
           if grep -q '^CONFIG_PACKAGE_rust=y$' .config; then
             echo "::error::rust 仍被选中，host 编译会失败"; exit 1
@@ -489,7 +493,10 @@ jobs:
           if grep -q '^CONFIG_PACKAGE_squid=y$' .config; then
             echo "::error::squid 仍被选中，会因 libpam.so.0 缺失打包失败"; exit 1
           fi
-          echo "✔ rust / rustdesk / shadowsocks-rust / squid 已关闭"
+          if grep -q '^CONFIG_PACKAGE_btop=y$' .config; then
+            echo "::error::btop 仍被选中，install 阶段会失败"; exit 1
+          fi
+          echo "✔ rust / rustdesk / shadowsocks-rust / squid / btop 已关闭"
 
       - name: 下载源码包
         run: |
