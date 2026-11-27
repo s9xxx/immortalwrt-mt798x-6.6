@@ -51,7 +51,7 @@ jobs:
   build:
     name: 🏗️ RAX3000M-e（官方 25.12）
     runs-on: ubuntu-24.04
-    timeout-minutes: 350
+    timeout-minutes: 360
     steps:
       - name: 检出构建仓库
         uses: actions/checkout@v4
@@ -448,6 +448,13 @@ jobs:
           # 但 24.10/6.6 环境找不到 TPM2 库 → CMake TPM2_LIB-NOTFOUND，
           # 拖挂 make world；OPC UA 库不是路由器固件必需，直接关掉。
           echo "# CONFIG_PACKAGE_libopen62541 is not set" >> .config
+          # semodule-utils 3.6 的 make install 不落 ipkg-install/usr/bin/semodule_expand，
+          # install 阶段报 No such file or directory 并拖挂 make world；serialconsole
+          # 的 install 规则指向 ipkg-install/usr/local/bin/sc，同样与实际产物路径不一致。
+          # 二者分别是 SELinux 策略工具与串口终端，均非路由器固件必需，直接关掉。
+          for s in semodule-utils semodule-expand semodule-link semodule-package semodule-unpackage serialconsole; do
+            echo "# CONFIG_PACKAGE_${s} is not set" >> .config
+          done
           make defconfig
           if grep -q '^CONFIG_PACKAGE_rust=y$' .config; then
             echo "::error::rust 仍被选中，host 编译会失败"; exit 1
@@ -464,7 +471,12 @@ jobs:
           if grep -q '^CONFIG_PACKAGE_libopen62541=y$' .config; then
             echo "::error::libopen62541 仍被选中，CMake TPM2_LIB 缺失会失败"; exit 1
           fi
-          echo "✔ rust / rustdesk / shadowsocks-rust / squid / btop / libopen62541 已关闭"
+          for s in semodule-utils semodule-expand semodule-link semodule-package semodule-unpackage serialconsole; do
+            if grep -q "^CONFIG_PACKAGE_${s}=y$" .config; then
+              echo "::error::${s} 仍被选中，install 阶段会因产物路径缺失失败"; exit 1
+            fi
+          done
+          echo "✔ rust / rustdesk / shadowsocks-rust / squid / btop / libopen62541 / semodule-utils / serialconsole 已关闭"
 
       - name: 下载源码包
         run: |
