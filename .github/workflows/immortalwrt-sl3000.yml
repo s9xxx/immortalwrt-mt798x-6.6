@@ -809,7 +809,10 @@ jobs:
           # tinyionice 1.0.1 / tgt 的 install 规则同样指向不存在的 ipkg-install/usr/bin/*，
           # install 阶段 No such file or directory 拖挂 make world（2026-11-28 SL-3000 日志证实），
           # 二者分别是 IO 调度工具与 iSCSI target，非路由器固件必需，一并关掉。
-          for s in semodule-utils semodule-expand semodule-link semodule-package semodule-unpackage serialconsole tinyionice tgt; do
+          # re 2.0.1(libre) 的 install 规则复制 ipkg-install/usr/lib/libre.so.1*，实际产物未落该路径，
+          # 2026-11-28 SL-3000 / RAX V2 日志均证实 cp: cannot stat 拖挂 make world；
+          # baresip(VoIP 客户端) 是唯一依赖 libre 的包（+libre），一并关掉避免 defconfig 重新拉起 libre。
+          for s in semodule-utils semodule-expand semodule-link semodule-package semodule-unpackage serialconsole tinyionice tgt libre baresip; do
             echo "# CONFIG_PACKAGE_${s} is not set" >> .config
           done
           make defconfig
@@ -828,12 +831,12 @@ jobs:
           if grep -q '^CONFIG_PACKAGE_libopen62541=y$' .config; then
             echo "::error::libopen62541 仍被选中，CMake TPM2_LIB 缺失会失败"; exit 1
           fi
-          for s in semodule-utils semodule-expand semodule-link semodule-package semodule-unpackage serialconsole tinyionice tgt; do
+          for s in semodule-utils semodule-expand semodule-link semodule-package semodule-unpackage serialconsole tinyionice tgt libre baresip; do
             if grep -q "^CONFIG_PACKAGE_${s}=y$" .config; then
               echo "::error::${s} 仍被选中，install 阶段会因产物路径缺失失败"; exit 1
             fi
           done
-          echo "✔ rust / rustdesk / shadowsocks-rust / squid / btop / libopen62541 / semodule-utils / serialconsole / tinyionice / tgt 已关闭"
+          echo "✔ rust / rustdesk / shadowsocks-rust / squid / btop / libopen62541 / semodule-utils / serialconsole / tinyionice / tgt / libre / baresip 已关闭"
 
       - name: 下载源码包
         run: |
